@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  barcode-server:
+    build: .
+    container_name: barcode-server
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - DB_PATH=/data/barcode.db
+      - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID:-}
+      - JWT_SECRET=${JWT_SECRET:-}
+      - SUPERADMIN_EMAILS=${SUPERADMIN_EMAILS:-}
+      - ACCURATE_PROVIDER=${ACCURATE_PROVIDER:-}
+      - ACCURATE_EMAIL=${ACCURATE_EMAIL:-}
+      - ACCURATE_PASSWORD=${ACCURATE_PASSWORD:-}
+      - ACCURATE_API_TOKEN=${ACCURATE_API_TOKEN:-}
+      - ACCURATE_API_SIGNATURE_SECRET=${ACCURATE_API_SIGNATURE_SECRET:-}
+    volumes:
+      - barcode-data:/data
+
+volumes:
+  barcode-data:

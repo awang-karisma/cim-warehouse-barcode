@@ -1,0 +1,475 @@
+@config "../tailwind.config.cjs";
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-kb-theme="dark"], [data-kb-theme="dark"] *, .dark, .dark *));
+
+@theme {
+  --color-background: hsl(var(--background));
+  --color-foreground: hsl(var(--foreground));
+  --color-card: hsl(var(--card));
+  --color-card-foreground: hsl(var(--card-foreground));
+  --color-popover: hsl(var(--popover));
+  --color-popover-foreground: hsl(var(--popover-foreground));
+  --color-primary: hsl(var(--primary));
+  --color-primary-foreground: hsl(var(--primary-foreground));
+  --color-secondary: hsl(var(--secondary));
+  --color-secondary-foreground: hsl(var(--secondary-foreground));
+  --color-muted: hsl(var(--muted));
+  --color-muted-foreground: hsl(var(--muted-foreground));
+  --color-accent: hsl(var(--accent));
+  --color-accent-foreground: hsl(var(--accent-foreground));
+  --color-destructive: hsl(var(--destructive));
+  --color-destructive-foreground: hsl(var(--destructive-foreground));
+  --color-border: hsl(var(--border));
+  --color-input: hsl(var(--input));
+  --color-ring: hsl(var(--ring));
+
+  --color-sidebar: hsl(var(--sidebar-background));
+  --color-sidebar-foreground: hsl(var(--sidebar-foreground));
+  --color-sidebar-primary: hsl(var(--sidebar-primary));
+  --color-sidebar-primary-foreground: hsl(var(--sidebar-primary-foreground));
+  --color-sidebar-accent: hsl(var(--sidebar-accent));
+  --color-sidebar-accent-foreground: hsl(var(--sidebar-accent-foreground));
+  --color-sidebar-border: hsl(var(--sidebar-border));
+  --color-sidebar-ring: hsl(var(--sidebar-ring));
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+
+  /* Semantic status palette */
+  --color-status-selesai: var(--status-selesai);
+  --color-status-proses: var(--status-proses);
+  --color-status-pending: var(--status-pending);
+  --color-status-batal: var(--status-batal);
+  --color-status-belum-selesai: var(--status-belum-selesai);
+}
+:root {
+  --background: 0 0% 100%;
+  --foreground: 240 10% 3.9%;
+  --card: 0 0% 100%;
+  --card-foreground: 240 10% 3.9%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 240 10% 3.9%;
+  --primary: 240 5.9% 10%;
+  --primary-foreground: 0 0% 98%;
+  --secondary: 240 4.8% 95.9%;
+  --secondary-foreground: 240 5.9% 10%;
+  --muted: 240 4.8% 95.9%;
+  --muted-foreground: 240 3.8% 46.1%;
+  --accent: 240 4.8% 95.9%;
+  --accent-foreground: 240 5.9% 10%;
+  --destructive: 0 84.2% 60.2%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 5.9% 90%;
+  --input: 240 5.9% 90%;
+  --ring: 240 5.9% 10%;
+  --radius: 0.5rem;
+
+  --sidebar-background: 0 0% 98%;
+  --sidebar-foreground: 240 5.3% 26.1%;
+  --sidebar-primary: 240 5.9% 10%;
+  --sidebar-primary-foreground: 0 0% 98%;
+  --sidebar-accent: 240 4.8% 95.9%;
+  --sidebar-accent-foreground: 240 5.9% 10%;
+  --sidebar-border: 220 13% 91%;
+  --sidebar-ring: 217.2 91.2% 59.8%;
+
+  --status-selesai: #10b981;
+  --status-proses: #f59e0b;
+  --status-pending: #a855f7;
+  --status-batal: #ef4444;
+  --status-belum-selesai: #eab308;
+}
+.dark,
+[data-kb-theme="dark"] {
+  --background: 240 10% 3.9%;
+  --foreground: 0 0% 98%;
+  --card: 240 10% 3.9%;
+  --card-foreground: 0 0% 98%;
+  --popover: 240 10% 3.9%;
+  --popover-foreground: 0 0% 98%;
+  --primary: 0 0% 98%;
+  --primary-foreground: 240 5.9% 10%;
+  --secondary: 240 3.7% 15.9%;
+  --secondary-foreground: 0 0% 98%;
+  --muted: 240 3.7% 15.9%;
+  --muted-foreground: 240 5% 64.9%;
+  --accent: 240 3.7% 15.9%;
+  --accent-foreground: 0 0% 98%;
+  --destructive: 0 62.8% 30.6%;
+  --destructive-foreground: 0 0% 98%;
+  --border: 240 3.7% 15.9%;
+  --input: 240 3.7% 15.9%;
+  --ring: 240 4.9% 83.9%;
+
+  --sidebar-background: 240 5.9% 10%;
+  --sidebar-foreground: 240 4.8% 95.9%;
+  --sidebar-primary: 224.3 76.3% 48%;
+  --sidebar-primary-foreground: 0 0% 100%;
+  --sidebar-accent: 240 3.7% 15.9%;
+  --sidebar-accent-foreground: 240 4.8% 95.9%;
+  --sidebar-border: 240 3.7% 15.9%;
+  --sidebar-ring: 217.2 91.2% 59.8%;
+
+  --status-selesai: #34d399;
+  --status-proses: #fbbf24;
+  --status-pending: #c084fc;
+  --status-batal: #f87171;
+  --status-belum-selesai: #facc15;
+}
+
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--color-background);
+  color: var(--color-foreground);
+  min-height: 100vh;
+}
+
+@keyframes page-enter {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    transform: none;
+  }
+}
+
+@keyframes card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Barcode Label Printing System */
+.sheet-wrapper {
+  transform-origin: top center;
+  transition: transform 0.15s ease-out;
+}
+
+.print-sheet {
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+  margin: 0 auto 20px auto;
+  position: relative;
+  page-break-after: always;
+  break-after: page;
+  box-sizing: border-box;
+}
+
+.screen-border .barcode-label {
+  outline: 1px dashed rgba(100, 116, 139, 0.4);
+}
+
+.barcode-label {
+  position: relative;
+  box-sizing: border-box;
+  overflow: hidden;
+  line-height: 1.15;
+}
+
+.skip-placeholder {
+  visibility: hidden !important;
+}
+
+.lbl-header {
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+}
+
+.lbl-name {
+  font-weight: 600;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.1;
+}
+
+.lbl-barcode {
+  display: flex;
+  align-items: center;
+  overflow: hidden;
+}
+
+.lbl-barcode svg {
+  max-width: 100%;
+  max-height: 100%;
+  height: 100%;
+  display: block;
+}
+
+.lbl-code {
+  font-family: monospace;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+
+.lbl-price {
+  font-weight: 700;
+}
+
+/* Audit Sheet Table Layout */
+.audit-sheet {
+  padding: 10mm;
+}
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 8pt;
+}
+.audit-table th, .audit-table td {
+  border: 1px solid #000000;
+  padding: 4px 6px;
+  text-align: left;
+}
+.audit-table th {
+  background: #f8fafc;
+  font-weight: 600;
+  text-align: center;
+}
+.audit-table td.center {
+  text-align: center;
+}
+.audit-table td.right {
+  text-align: right;
+}
+
+/* Hide browser default number input spinners (quantity stepper uses ± buttons) */
+input[type="number"]::-webkit-outer-spin-button,
+input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+/* Delivery Flow Bulk Selection Bar */
+.df-bulk-segmented {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.625rem;
+  padding: 0.5rem 0.625rem;
+  border-radius: var(--radius);
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--card));
+}
+
+.df-seg-metrics {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.df-metric-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  border: 1px solid hsl(var(--border));
+  background-color: hsl(var(--muted) / 0.5);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+}
+
+.df-metric-chip strong {
+  color: hsl(var(--foreground));
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.df-btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.df-normal-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  height: 1.75rem;
+  padding: 0 0.625rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  cursor: pointer;
+  border: 1px solid hsl(var(--input));
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+}
+
+.df-normal-btn:hover:not(:disabled) {
+  background-color: hsl(var(--accent));
+  color: hsl(var(--accent-foreground));
+}
+
+.df-normal-btn-clear:hover:not(:disabled) {
+  background-color: hsl(var(--destructive) / 0.1);
+  border-color: hsl(var(--destructive) / 0.35);
+  color: hsl(var(--destructive));
+}
+
+.df-normal-btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.df-btn-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.05rem 0.375rem;
+  border-radius: 4px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  background-color: hsl(var(--muted));
+  color: hsl(var(--foreground));
+}
+
+.df-tab-counter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 1.125rem;
+  min-width: 1.25rem;
+  padding: 0 0.375rem;
+  border-radius: 4px;
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Delivery Flow Floating Dock Backdrop */
+.df-dock-backdrop {
+  position: fixed;
+  inset: 0;
+  background-color: hsl(var(--background) / 0.6);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  z-index: 39;
+  animation: fadeIn 150ms ease-out both;
+}
+
+.df-dock-filter-panel {
+  background-color: hsl(var(--card));
+  border-top: 1px solid hsl(var(--border));
+  padding: 0.75rem 1rem;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+/* PRINT MEDIA OVERRIDES */
+@media print {
+  header, nav, aside, [data-sidebar], .no-print, [role="dialog"], [role="status"] {
+    display: none !important;
+  }
+
+  body, html, #root, main, .group\/sidebar-wrapper, .page-transition, .barcode-print-root, .barcode-print-card {
+    display: block !important;
+    background: transparent !important;
+    color: #000000 !important;
+    width: auto !important;
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    border-radius: 0 !important;
+    box-shadow: none !important;
+    animation: none !important;
+    transform: none !important;
+  }
+
+  .preview-pane {
+    display: block !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: transparent !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+    width: auto !important;
+  }
+
+  .sheet-wrapper {
+    display: block !important;
+    transform: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    width: auto !important;
+  }
+
+  .print-sheet {
+    box-shadow: none !important;
+    margin: 0 !important;
+    overflow: hidden !important;
+    page-break-after: always !important;
+    break-after: page !important;
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
+  .print-sheet:last-child {
+    page-break-after: auto !important;
+    break-after: auto !important;
+  }
+
+  .barcode-label {
+    outline: none !important;
+  }
+
+  .delivery-print-sheet {
+    display: block !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    page-break-after: auto !important;
+  }
+}

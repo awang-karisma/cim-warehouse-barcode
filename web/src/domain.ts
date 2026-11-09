@@ -1,0 +1,19 @@
+export const USER_ROLE = { GUEST: "guest", USER: "user", ADMIN: "admin", SUPERADMIN: "superadmin" } as const;
+export const LOCALE = { ENGLISH: "en", INDONESIAN: "id" } as const;
+export const ACCURATE_SOURCE = { RECEIVE_ITEM: "receive-item", PURCHASE_ORDER: "purchase-order", SALES_ORDER: "sales-order", DELIVERY_ORDER: "delivery-order", STOCK_OPNAME_ORDER: "stock-opname-order", STOCK_OPNAME_RESULT: "stock-opname-result" } as const;
+export const ACCURATE_PROVIDER = { WEB: "web", OFFICIAL: "official" } as const;
+export const ACCURATE_LOGIN_STATUS = { SUCCESS: "success", MFA_REQUIRED: "mfa_required" } as const;
+export const BARCODE_SYMBOLOGY = { CODE128: "CODE128", CODE39: "CODE39", EAN13: "EAN13", QRCODE: "QRCODE", DATAMATRIX: "DATAMATRIX" } as const;
+export const BARCODE_HEIGHT = { COMPACT: "compact", MEDIUM: "medium", LARGE: "large" } as const;
+export const FONT_SIZE = { SMALL: "small", MEDIUM: "medium", LARGE: "large" } as const;
+export const QTY_MODE = { SINGLE: "single", MULTIPLY: "multiply" } as const;
+
+export type UserRole = (typeof USER_ROLE)[keyof typeof USER_ROLE];
+export type Locale = (typeof LOCALE)[keyof typeof LOCALE];
+export type AccurateSource = (typeof ACCURATE_SOURCE)[keyof typeof ACCURATE_SOURCE];
+export type AccurateProvider = (typeof ACCURATE_PROVIDER)[keyof typeof ACCURATE_PROVIDER];
+export type AccurateLoginStatus = (typeof ACCURATE_LOGIN_STATUS)[keyof typeof ACCURATE_LOGIN_STATUS];
+export type BarcodeSymbology = (typeof BARCODE_SYMBOLOGY)[keyof typeof BARCODE_SYMBOLOGY];
+export type BarcodeHeight = (typeof BARCODE_HEIGHT)[keyof typeof BARCODE_HEIGHT];
+export type FontSize = (typeof FONT_SIZE)[keyof typeof FONT_SIZE];
+export type QtyMode = (typeof QTY_MODE)[keyof typeof QTY_MODE];
