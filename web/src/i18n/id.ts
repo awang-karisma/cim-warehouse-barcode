@@ -101,6 +101,14 @@ export const dict: RawDictionary = {
     "description": "Pilih bahasa tampilan yang diinginkan"
   },
   "barcode": {
+    "queueTab": "Antrean Cetak",
+    "designerTab": "Desainer Label",
+    "presetsTab": "Preset",
+    "previewTab": "Pratinjau Cetak",
+    "presetsTabTitle": "Manajer Preset",
+    "presetsTabDesc": "Pilih, buat, dan kelola preset label yang dapat digunakan kembali",
+    "customizeInPresets": "Ubah di Preset",
+    "designerTabTitle": "Desainer Label",
     "scanPlaceholder": "Pindai barcode atau cari barang Accurate...",
     "accurateItems": "Barang Accurate",
     "loadPoDo": "Muat PO / DO",

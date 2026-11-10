@@ -59,6 +59,23 @@ Warehouse Barcode generates and prints barcode labels for warehouse products, pu
    ```
    Vite dev server starts on `http://localhost:3000` with proxies configured for `/api`, `/auth`, and `/health`.
 
+### Authentication Bypass (Local Dev)
+
+Authentication is optional and bypassed by default in local environments:
+
+- **Activation**: Leave `GOOGLE_CLIENT_ID` empty or unset in `.env` (the default in `.env.example`).
+- **Backend behavior**:
+  - `GET /auth/config` responds with `{"auth_enabled": false}`.
+  - Fiber route middleware (`authMiddleware`) and Huma OpenAPI middleware (`humaAuthMiddleware`) skip cookie and JWT token verification.
+  - Role enforcement (`requireRole`) permits all requests without claims, allowing direct access to all API and admin routes.
+- **Frontend behavior**:
+  - `AuthProvider` queries `GET /auth/config` on initial load.
+  - When `auth_enabled` is `false`, it automatically provisions an active developer session:
+    - **Name**: `Developer`
+    - **Role**: `superadmin`
+  - Login and pending-approval gates are bypassed, providing immediate access to the print queue, label designer, preset management, and administrative views without external OAuth credentials.
+- **Enabling authentication**: Set a valid `GOOGLE_CLIENT_ID` in `.env` (along with `SUPERADMIN_EMAILS` and optional `JWT_SECRET`). The backend will enforce token verification and the frontend will require Google OAuth sign-in.
+
 ## Production Build & Embedding
 
 To build a single self-contained binary with the SolidJS SPA embedded:

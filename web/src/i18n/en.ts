@@ -102,6 +102,14 @@ export const dict = {
     "description": "Select your preferred display language"
   },
   "barcode": {
+    "queueTab": "Print Queue",
+    "designerTab": "Label Designer",
+    "presetsTab": "Presets",
+    "previewTab": "Print Preview",
+    "presetsTabTitle": "Preset Manager",
+    "presetsTabDesc": "Choose, create, and manage reusable label presets",
+    "customizeInPresets": "Customize in Presets",
+    "designerTabTitle": "Label Designer",
     "scanPlaceholder": "Scan barcode or search Accurate item...",
     "accurateItems": "Accurate Items",
     "loadPoDo": "Load PO / DO",
