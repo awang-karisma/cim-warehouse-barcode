@@ -28,5 +28,4 @@ web/dist/
 # Embedded frontend build staging
 cmd/barcode-server/dist/
 
-# Documentation (local developer reference)
-docs/
+/docs/

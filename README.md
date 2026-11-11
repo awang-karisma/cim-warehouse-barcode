@@ -117,6 +117,15 @@ The service runs at `http://localhost:8080` with data stored in the `barcode-dat
 - `PUT /api/v1/admin/users/{email}/role` — Update user role (Admin only)
 - `DELETE /api/v1/admin/users/{email}` — Delete user (Admin only)
 
+### Roles & Permissions (RBAC)
+- `GET /api/v1/admin/roles` — List system and custom roles (`role:read`)
+- `POST /api/v1/admin/roles` — Create custom role (`role:create`)
+- `PUT /api/v1/admin/roles/{id}` — Update role details (`role:update`)
+- `DELETE /api/v1/admin/roles/{id}` — Delete unused custom role (`role:delete`)
+- `GET /api/v1/admin/roles/{id}/permissions` — Get role permission list (`role:read`)
+- `PUT /api/v1/admin/roles/{id}/permissions` — Update role permissions (`role:update`)
+- `GET /api/v1/admin/permissions` — List all registered system permissions (`role:read`)
+
 ### Page Designs & Presets
 - `GET /api/v1/page-designs` — List custom page designs
 - `POST /api/v1/page-designs` — Create custom page design
