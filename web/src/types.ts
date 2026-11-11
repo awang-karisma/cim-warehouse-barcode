@@ -15,6 +15,24 @@ export interface UsersResponse {
   users: User[];
 }
 
+export interface Role {
+  id: number;
+  name: string;
+  description: string;
+  is_system: boolean;
+  permissions: string[];
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RolesResponse {
+  roles: Role[];
+}
+
+export interface PermissionsResponse {
+  permissions: string[];
+}
+
 export interface SystemResponse {
   version: string;
   go_version: string;

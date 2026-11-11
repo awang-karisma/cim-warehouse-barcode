@@ -1,6 +1,9 @@
 import type {
   SystemResponse,
   UsersResponse,
+  Role,
+  RolesResponse,
+  PermissionsResponse,
   AccurateStatus,
   AccurateDatabase,
   AccurateSearchItemsResult,
@@ -94,6 +97,41 @@ export const deleteUser = (email: string) =>
   apiFetch<{ status: string }>(`/api/v1/admin/users/${encodeURIComponent(email)}`, {
     method: 'DELETE',
   });
+
+// Admin role endpoints
+export const getRoles = () => apiFetch<RolesResponse>('/api/v1/admin/roles');
+
+export const createRole = (payload: { name: string; description: string; permissions: string[] }) =>
+  apiFetch<Role>('/api/v1/admin/roles', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const updateRole = (id: number, payload: { name: string; description: string }) =>
+  apiFetch<Role>(`/api/v1/admin/roles/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+export const deleteRole = (id: number) =>
+  apiFetch<{ status: string }>(`/api/v1/admin/roles/${id}`, {
+    method: 'DELETE',
+  });
+
+export const getRolePermissions = (id: number) =>
+  apiFetch<{ permissions: string[] }>(`/api/v1/admin/roles/${id}/permissions`);
+
+export const setRolePermissions = (id: number, permissions: string[]) =>
+  apiFetch<{ status: string; permissions: string[] }>(`/api/v1/admin/roles/${id}/permissions`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ permissions }),
+  });
+
+export const getAllPermissions = () =>
+  apiFetch<{ permissions: string[] }>('/api/v1/admin/permissions');
 
 // Accurate Online Integration Endpoints
 export const getAccurateStatus = () =>

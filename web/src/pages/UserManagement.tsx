@@ -3,7 +3,7 @@ import { USER_ROLE } from '~/domain';
 import { type Component, createSignal, createResource, createMemo, Show, For } from 'solid-js';
 import { useI18n } from '~/i18n';
 import { useAuth } from '~/auth';
-import { getUsers, setUserRole, deleteUser } from '~/api';
+import { getUsers, getRoles, setUserRole, deleteUser } from '~/api';
 import type { User } from '~/types';
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '~/components/ui/card';
 import {
@@ -38,6 +38,7 @@ export const UserManagement: Component = () => {
   const { t, formatDate } = useI18n();
   const auth = useAuth();
   const [data, { refetch }] = createResource(getUsers);
+  const [roles] = createResource(getRoles);
   const [search, setSearch] = createSignal('');
   const [userToDelete, setUserToDelete] = createSignal<User | null>(null);
   const [actionError, setActionError] = createSignal<string | null>(null);
@@ -45,8 +46,6 @@ export const UserManagement: Component = () => {
   const [updatingEmail, setUpdatingEmail] = createSignal<string | null>(null);
 
   const currentUser = () => auth.user();
-	const isSuperadmin = () => currentUser()?.role === USER_ROLE.SUPERADMIN;
-
   const filteredUsers = createMemo(() => {
     const users = data()?.users || [];
     const q = search().toLowerCase().trim();
@@ -71,8 +70,8 @@ export const UserManagement: Component = () => {
       await setUserRole(targetUser.email, newRole);
       setActionSuccess(`Role for ${targetUser.email} updated to ${newRole}.`);
       await refetch();
-    } catch (err: any) {
-      setActionError(err?.message || 'Failed to update user role.');
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Failed to update user role.');
     } finally {
       setUpdatingEmail(null);
     }
@@ -91,8 +90,8 @@ export const UserManagement: Component = () => {
       setActionSuccess(`User ${target.email} deleted successfully.`);
       setUserToDelete(null);
       await refetch();
-    } catch (err: any) {
-      setActionError(err?.message || 'Failed to delete user.');
+    } catch (err: unknown) {
+      setActionError(err instanceof Error ? err.message : 'Failed to delete user.');
     }
   };
 
@@ -240,7 +239,7 @@ export const UserManagement: Component = () => {
                             <TableCell class="text-right">
                               <div class="flex items-center justify-end gap-2">
                                 {/* Guest approval button */}
-								<Show when={u.role === USER_ROLE.GUEST && !isSelf}>
+                                <Show when={u.role === USER_ROLE.GUEST && !isSelf && (auth.hasPermission('user:create') || auth.hasPermission('user:update'))}>
                                   <Button
                                     size="sm"
                                     class="h-8 gap-1 text-xs"
@@ -252,26 +251,27 @@ export const UserManagement: Component = () => {
                                   </Button>
                                 </Show>
 
-                                {/* Role dropdown for active non-superadmin users (superadmin only) */}
-                                <Show when={isSuperadmin() && !isTargetSuper && !isSelf}>
+                                {/* Role dropdown for active non-superadmin users */}
+                                <Show when={auth.hasPermission('user:update') && !isTargetSuper && !isSelf}>
                                   <select
                                     class="h-8 rounded-md border border-input bg-background px-2 text-xs focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50"
                                     value={u.role}
                                     disabled={isUpdating()}
                                     onChange={(e) => handleRoleChange(u, e.currentTarget.value)}
                                   >
-									<Show when={u.role === USER_ROLE.GUEST}>
-										<option value={USER_ROLE.GUEST} disabled>
-											Guest
-										</option>
-									</Show>
-									<option value={USER_ROLE.USER}>User</option>
-									<option value={USER_ROLE.ADMIN}>Admin</option>
+                                    <Show when={u.role === USER_ROLE.GUEST}>
+                                      <option value={USER_ROLE.GUEST} disabled>
+                                        Guest
+                                      </option>
+                                    </Show>
+                                    <For each={roles()?.roles.filter((r) => r.name !== 'superadmin' && r.name !== 'guest')}>
+                                      {(role) => <option value={role.name}>{role.name}</option>}
+                                    </For>
                                   </select>
                                 </Show>
 
-                                {/* Delete button: superadmins can delete any non-superadmin target; admins can delete guest/user targets */}
-								<Show when={!isSelf && !isTargetSuper && (isSuperadmin() || u.role === USER_ROLE.GUEST || u.role === USER_ROLE.USER)}>
+                                {/* Delete button */}
+                                <Show when={!isSelf && !isTargetSuper && auth.hasPermission('user:delete')}>
                                   <Button
                                     variant="ghost"
                                     size="sm"

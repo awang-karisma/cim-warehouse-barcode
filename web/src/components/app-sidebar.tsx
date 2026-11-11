@@ -1,4 +1,3 @@
-import { USER_ROLE } from '~/domain';
 import { ROUTES } from '~/routes';
 import { type Component, For, createMemo } from 'solid-js';
 import { A, useLocation } from '@solidjs/router';
@@ -8,9 +7,10 @@ import {
   IconPackage,
   IconBarcode,
   IconUserCog,
+  IconShieldCog,
+  IconTestPipe,
   type IconProps,
 } from '@tabler/icons-solidjs';
-
 import {
   Sidebar,
   SidebarContent,
@@ -50,9 +50,15 @@ export const AppSidebar: Component = () => {
     }
   };
 
-  const isPrivileged = createMemo(() => {
-    const role = auth.user()?.role;
-    return role === USER_ROLE.ADMIN || role === USER_ROLE.SUPERADMIN;
+  const canManageUsers = createMemo(() => auth.hasPermission('user:read'));
+  const canManageRoles = createMemo(() => auth.hasPermission('role:read'));
+
+  const adminItems = createMemo<NavItem[]>(() => {
+    const items: NavItem[] = [];
+    if (canManageUsers()) items.push({ href: ROUTES.users, label: t('nav.userManagement'), icon: IconUserCog });
+    if (canManageRoles()) items.push({ href: ROUTES.roles, label: t('nav.roleManagement'), icon: IconShieldCog });
+    if (auth.hasPermission('role:read')) items.push({ href: ROUTES.rbacTemplate, label: t('nav.rbacTemplate'), icon: IconTestPipe });
+    return items;
   });
 
   const currentNavGroups = createMemo<NavGroup[]>(() => [
@@ -62,13 +68,11 @@ export const AppSidebar: Component = () => {
         { href: ROUTES.barcode, label: t('nav.barcodePrinter'), icon: IconBarcode },
       ],
     },
-    ...(isPrivileged()
+    ...(adminItems().length > 0
       ? [
           {
             label: t('navGroups.administration'),
-            items: [
-              { href: ROUTES.users, label: t('nav.userManagement'), icon: IconUserCog },
-            ],
+            items: adminItems(),
           },
         ]
       : []),

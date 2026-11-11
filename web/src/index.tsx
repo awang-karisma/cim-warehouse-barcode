@@ -12,6 +12,8 @@ import { Barcode } from './pages/Barcode';
 import { Privacy } from './pages/Privacy';
 import { Terms } from './pages/Terms';
 import { UserManagement } from './pages/UserManagement';
+import { RoleManagement } from './pages/RoleManagement';
+import { RBACTemplate } from './pages/RBACTemplate';
 
 const storageManager = createLocalStorageManager('warehouse-barcode-ui-theme');
 
@@ -28,6 +30,8 @@ if (root) {
                 <Route path={ROUTES.root} component={() => <Navigate href={ROUTES.barcode} />} />
                 <Route path={ROUTES.barcode} component={Barcode} />
                 <Route path={ROUTES.users} component={UserManagement} />
+                <Route path={ROUTES.roles} component={RoleManagement} />
+                <Route path={ROUTES.rbacTemplate} component={RBACTemplate} />
                 <Route path={ROUTES.privacy} component={Privacy} />
                 <Route path={ROUTES.terms} component={Terms} />
               </Router>

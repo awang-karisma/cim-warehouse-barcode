@@ -81,6 +81,23 @@ export async function handleSelectDatabase(dbId: number): Promise<boolean> {
   }
 }
 
+export async function handleLogout(): Promise<boolean> {
+  setIsAuthLoading(true);
+  setAuthError(null);
+  try {
+    await api.accurateLogout();
+    await refreshStatus();
+    setIsLoginModalOpen(false);
+    setIsAuthLoading(false);
+    return true;
+  } catch (err) {
+    setIsAuthLoading(false);
+    const msg = err instanceof Error ? err.message : 'Logout failed';
+    setAuthError(msg);
+    return false;
+  }
+}
+
 export function handleSessionInvalidated(message?: string): void {
   setStatus((prev) => ({ ...prev, connected: false }));
   setAuthError(message || 'Your Accurate session was invalidated or expired. Please sign in again.');

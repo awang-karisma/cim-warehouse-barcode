@@ -9,6 +9,7 @@ import {
   onMount,
   Show,
 } from 'solid-js';
+import { useAuth, PermissionGuard } from '~/auth';
 import { QTY_MODE } from '~/domain';
 import * as api from '~/api';
 import { Badge } from '~/components/ui/badge';
@@ -58,6 +59,7 @@ import { setIsSearchOpen, setIsTransactionOpen } from './drawerState';
 
 export const QueueTab: Component = () => {
   const { t } = useI18n();
+  const auth = useAuth();
 
   let searchInputRef: HTMLInputElement | undefined;
   let searchContainerRef: HTMLDivElement | undefined;
@@ -306,25 +308,27 @@ export const QueueTab: Component = () => {
             {/* Import Buttons Group + Accurate status badge */}
             <div class="flex items-center gap-2 flex-wrap">
               <Show when={status().connected}>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsSearchOpen(true)}
-                  class="h-9 gap-1 text-xs"
-                >
-                  <IconPackage class="size-3.5" />
-                  <span>{t('barcode.accurateItems')}</span>
-                </Button>
+                <PermissionGuard permission="accurate:read">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsSearchOpen(true)}
+                    class="h-9 gap-1 text-xs"
+                  >
+                    <IconPackage class="size-3.5" />
+                    <span>{t('barcode.accurateItems')}</span>
+                  </Button>
 
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsTransactionOpen(true)}
-                  class="h-9 gap-1 text-xs"
-                >
-                  <IconFileInvoice class="size-3.5" />
-                  <span>{t('barcode.loadPoDo')}</span>
-                </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsTransactionOpen(true)}
+                    class="h-9 gap-1 text-xs"
+                  >
+                    <IconFileInvoice class="size-3.5" />
+                    <span>{t('barcode.loadPoDo')}</span>
+                  </Button>
+                </PermissionGuard>
               </Show>
 
               {/* Accurate Connection Status */}
@@ -339,26 +343,48 @@ export const QueueTab: Component = () => {
                 <Show
                   when={status().connected}
                   fallback={
+                    <PermissionGuard
+                      permission="accurate:create"
+                      fallback={
+                        <span class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
+                          <IconPlugConnectedX class="size-3.5" />
+                          <span>{t('barcode.accurateDisconnected')}</span>
+                        </span>
+                      }
+                    >
+                      <button
+                        type="button"
+                        onClick={() => setIsLoginModalOpen(true)}
+                        class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                      >
+                        <IconPlugConnectedX class="size-3.5" />
+                        <span>{t('barcode.accurateDisconnected')}</span>
+                      </button>
+                    </PermissionGuard>
+                  }
+                >
+                  <Show
+                    when={auth.hasAnyPermission('accurate:update', 'accurate:delete')}
+                    fallback={
+                      <div class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
+                        <IconPlugConnected class="size-3.5" />
+                        <span class="truncate max-w-[140px] font-semibold">
+                          {status().database?.alias || t('barcode.connected')}
+                        </span>
+                      </div>
+                    }
+                  >
                     <button
                       type="button"
                       onClick={() => setIsLoginModalOpen(true)}
-                      class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
+                      class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
                     >
-                      <IconPlugConnectedX class="size-3.5" />
-                      <span>{t('barcode.accurateDisconnected')}</span>
+                      <IconPlugConnected class="size-3.5" />
+                      <span class="truncate max-w-[140px] font-semibold">
+                        {status().database?.alias || t('barcode.connected')}
+                      </span>
                     </button>
-                  }
-                >
-                  <button
-                    type="button"
-                    onClick={() => setIsLoginModalOpen(true)}
-                    class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
-                  >
-                    <IconPlugConnected class="size-3.5" />
-                    <span class="truncate max-w-[140px] font-semibold">
-                      {status().database?.alias || t('barcode.connected')}
-                    </span>
-                  </button>
+                  </Show>
                 </Show>
               </Show>
             </div>

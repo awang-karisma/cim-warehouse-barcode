@@ -1,4 +1,3 @@
-import { USER_ROLE } from '~/domain';
 
 import { createEffect, createResource, For, Show, createSignal } from 'solid-js';
 import { createLabelLayoutPreset, deleteLabelLayoutPreset, getLabelLayoutPresets, updateLabelLayoutPreset } from '~/api';
@@ -18,7 +17,9 @@ export function LabelLayoutDesigner() {
   const pxPerMm = () => Math.min(280 / Math.max(cfg().labelWidthMM, 1), 200 / Math.max(cfg().labelHeightMM, 1));
   const selected = () => labelLayout().find((el) => el.id === selectedId());
   const auth = useAuth();
-	const isAdmin = () => auth.user()?.role === USER_ROLE.ADMIN || auth.user()?.role === USER_ROLE.SUPERADMIN;
+  const canCreatePreset = () => auth.hasPermission('preset:create');
+  const canUpdatePreset = () => auth.hasPermission('preset:update');
+  const canDeletePreset = () => auth.hasPermission('preset:delete');
   const [layoutPresets, { refetch: refetchLayoutPresets }] = createResource(() => getLabelLayoutPresets().then((result) => result.presets).catch(() => [] as LabelLayoutPreset[]));
   const [selectedPresetId, setSelectedPresetId] = createSignal('');
   const [presetName, setPresetName] = createSignal('');
@@ -159,11 +160,19 @@ export function LabelLayoutDesigner() {
             </select>
           </div>
           <div class="flex flex-wrap justify-end gap-1.5">
-            <Show when={isAdmin()}>
-              <input value={presetName()} onInput={(event) => setPresetName(event.currentTarget.value)} placeholder={t('barcode.layoutPresetName')} class="h-8 w-36 px-2 border rounded bg-background text-xs" />
-              <button type="button" disabled={isSavingPreset()} class="h-8 px-2 border rounded bg-background hover:bg-muted text-xs disabled:opacity-50" onClick={() => void saveLayoutPreset(false)}>{t('barcode.saveLayoutPreset')}</button>
-              <button type="button" disabled={!selectedPresetId() || isSavingPreset()} class="h-8 px-2 border rounded bg-background hover:bg-muted text-xs disabled:opacity-50" onClick={() => void saveLayoutPreset(true)}>{t('barcode.updateLayoutPreset')}</button>
-              <button type="button" disabled={!selectedPresetId() || isSavingPreset()} class="h-8 px-2 border rounded text-destructive hover:bg-destructive/10 text-xs disabled:opacity-50" onClick={() => setConfirmingDelete(true)}>{t('common.delete')}</button>
+            <Show when={auth.hasAnyPermission('preset:create', 'preset:update', 'preset:delete')}>
+              <Show when={auth.hasAnyPermission('preset:create', 'preset:update')}>
+                <input value={presetName()} onInput={(event) => setPresetName(event.currentTarget.value)} placeholder={t('barcode.layoutPresetName')} class="h-8 w-36 px-2 border rounded bg-background text-xs" />
+              </Show>
+              <Show when={canCreatePreset()}>
+                <button type="button" disabled={isSavingPreset()} class="h-8 px-2 border rounded bg-background hover:bg-muted text-xs disabled:opacity-50" onClick={() => void saveLayoutPreset(false)}>{t('barcode.saveLayoutPreset')}</button>
+              </Show>
+              <Show when={canUpdatePreset()}>
+                <button type="button" disabled={!selectedPresetId() || isSavingPreset()} class="h-8 px-2 border rounded bg-background hover:bg-muted text-xs disabled:opacity-50" onClick={() => void saveLayoutPreset(true)}>{t('barcode.updateLayoutPreset')}</button>
+              </Show>
+              <Show when={canDeletePreset()}>
+                <button type="button" disabled={!selectedPresetId() || isSavingPreset()} class="h-8 px-2 border rounded text-destructive hover:bg-destructive/10 text-xs disabled:opacity-50" onClick={() => setConfirmingDelete(true)}>{t('common.delete')}</button>
+              </Show>
             </Show>
             <select aria-label={t('barcode.addElement')} class="h-8 px-2 border rounded bg-background text-xs"
               value="" onChange={(event) => {

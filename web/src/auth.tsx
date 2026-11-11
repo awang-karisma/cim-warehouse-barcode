@@ -7,6 +7,7 @@ import {
   useContext,
   createSignal,
   onMount,
+  Show,
   type JSX,
   type ParentComponent,
 } from 'solid-js';
@@ -17,6 +18,7 @@ export interface AuthUser {
   picture: string;
   role: UserRole;
   locale?: string;
+  permissions?: string[];
 }
 
 export interface AuthConfig {
@@ -32,6 +34,8 @@ export interface AuthContextValue {
   logout: () => Promise<void>;
   refetch: () => Promise<void>;
   setUserLocale: (locale: string) => void;
+  hasPermission: (perm: string) => boolean;
+  hasAnyPermission: (...perms: string[]) => boolean;
 }
 
 const AuthContext = createContext<AuthContextValue>();
@@ -59,8 +63,9 @@ export const AuthProvider: ParentComponent = (props) => {
         setUser({
           email: '',
           name: 'Developer',
-			picture: '',
-			role: USER_ROLE.SUPERADMIN,
+          picture: '',
+          role: USER_ROLE.SUPERADMIN,
+          permissions: ['*'],
         });
         setLoading(false);
         return;
@@ -127,6 +132,20 @@ export const AuthProvider: ParentComponent = (props) => {
   const setUserLocale = (locale: string) => {
     setUser((prev) => (prev ? { ...prev, locale } : prev));
   };
+  const hasPermission = (perm: string): boolean => {
+    const u = user();
+    if (!u || !u.permissions) return false;
+    if (u.permissions.includes('*')) return true;
+    return u.permissions.includes(perm);
+  };
+
+  const hasAnyPermission = (...perms: string[]): boolean => {
+    const u = user();
+    if (!u || !u.permissions) return false;
+    if (u.permissions.includes('*')) return true;
+    return perms.some((p) => u.permissions!.includes(p));
+  };
+
 
   const value: AuthContextValue = {
     user,
@@ -136,6 +155,8 @@ export const AuthProvider: ParentComponent = (props) => {
     logout,
     refetch,
     setUserLocale,
+    hasPermission,
+    hasAnyPermission,
   };
 
   return <AuthContext.Provider value={value}>{props.children}</AuthContext.Provider>;
@@ -147,4 +168,9 @@ export const useAuth = (): AuthContextValue => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
+};
+
+export const PermissionGuard: ParentComponent<{ permission: string; fallback?: JSX.Element }> = (props) => {
+  const auth = useAuth();
+  return <Show when={auth.hasPermission(props.permission)} fallback={props.fallback}>{props.children}</Show>;
 };

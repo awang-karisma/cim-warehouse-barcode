@@ -17,3 +17,12 @@ export type BarcodeSymbology = (typeof BARCODE_SYMBOLOGY)[keyof typeof BARCODE_S
 export type BarcodeHeight = (typeof BARCODE_HEIGHT)[keyof typeof BARCODE_HEIGHT];
 export type FontSize = (typeof FONT_SIZE)[keyof typeof FONT_SIZE];
 export type QtyMode = (typeof QTY_MODE)[keyof typeof QTY_MODE];
+
+export const PERMISSION_RESOURCES = {
+  design: { label: 'Page Designs', verbs: ['read', 'create', 'update', 'delete'] },
+  preset: { label: 'Label Presets', verbs: ['read', 'create', 'update', 'delete'] },
+  accurate: { label: 'Accurate Online', verbs: ['read', 'create', 'update', 'delete'] },
+  user: { label: 'User Management', verbs: ['read', 'create', 'update', 'delete'] },
+  role: { label: 'Role Management', verbs: ['read', 'create', 'update', 'delete'] },
+  system: { label: 'System', verbs: ['read'] },
+} as const;

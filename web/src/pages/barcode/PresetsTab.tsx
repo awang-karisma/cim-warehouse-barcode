@@ -8,7 +8,6 @@ import {
   CardHeader,
   CardTitle,
 } from '~/components/ui/card';
-import { USER_ROLE } from '~/domain';
 import { useI18n } from '~/i18n';
 import {
   customConfig,
@@ -49,10 +48,9 @@ export const PresetsTab: Component = () => {
   const { t } = useI18n();
   const auth = useAuth();
 
-  const isAdmin = () => {
-    const role = auth.user()?.role;
-    return role === USER_ROLE.ADMIN || role === USER_ROLE.SUPERADMIN;
-  };
+  const canCreateDesign = () => auth.hasPermission('design:create');
+  const canUpdateDesign = () => auth.hasPermission('design:update');
+  const canDeleteDesign = () => auth.hasPermission('design:delete');
 
   const selectedPaper = () => {
     const p = customConfig().paper;
@@ -171,64 +169,81 @@ export const PresetsTab: Component = () => {
           </Show>
 
           {/* Action buttons under dropdown */}
-          <Show when={isAdmin()}>
+          <Show when={auth.hasAnyPermission('design:create', 'design:update', 'design:delete')}>
             <div class="pt-1">
               <div class="grid grid-cols-3 gap-2">
-                <Button
-                  type="button"
-                  variant={isEditing() ? 'secondary' : 'outline'}
-                  size="sm"
-                  class="w-full h-8 text-xs gap-1 px-1"
-                  disabled={!presetKey().startsWith(SERVER_PRESET_PREFIX) || isCreating()}
-                  onClick={() => {
-                    if (isEditing()) cancelEditing();
-                    else startEditing();
-                  }}
-                  title={
-                    !presetKey().startsWith(SERVER_PRESET_PREFIX)
-                      ? t('barcode.builtinCannotEdit')
-                      : isEditing()
-                      ? t('barcode.closePresetEditor')
-                      : t('barcode.editCustomPreset')
-                  }
+                <Show
+                  when={canUpdateDesign()}
+                  fallback={<div />}
                 >
-                  <Show when={isEditing()} fallback={<IconEdit class="size-3.5" />}>
-                    <IconX class="size-3.5" />
-                  </Show>
-                  <span>{isEditing() ? t('common.cancel') : t('barcode.editPreset')}</span>
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  class="w-full h-8 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 disabled:text-muted-foreground disabled:hover:bg-transparent disabled:opacity-40 gap-1 px-1"
-                  disabled={!presetKey().startsWith(SERVER_PRESET_PREFIX) || isCreating()}
-                  onClick={handleDeleteCurrentDesign}
-                  title={
-                    !presetKey().startsWith(SERVER_PRESET_PREFIX)
-                      ? t('barcode.builtinCannotDelete')
-                      : t('barcode.deleteCustomPreset')
-                  }
+                  <Button
+                    type="button"
+                    variant={isEditing() ? 'secondary' : 'outline'}
+                    size="sm"
+                    class="w-full h-8 text-xs gap-1 px-1"
+                    disabled={!presetKey().startsWith(SERVER_PRESET_PREFIX) || isCreating()}
+                    onClick={() => {
+                      if (isEditing()) cancelEditing();
+                      else startEditing();
+                    }}
+                    title={
+                      !presetKey().startsWith(SERVER_PRESET_PREFIX)
+                        ? t('barcode.builtinCannotEdit')
+                        : isEditing()
+                        ? t('barcode.closePresetEditor')
+                        : t('barcode.editCustomPreset')
+                    }
+                  >
+                    <Show when={isEditing()} fallback={<IconEdit class="size-3.5" />}>
+                      <IconX class="size-3.5" />
+                    </Show>
+                    <span>{isEditing() ? t('common.cancel') : t('barcode.editPreset')}</span>
+                  </Button>
+                </Show>
+
+                <Show
+                  when={canDeleteDesign()}
+                  fallback={<div />}
                 >
-                  <IconTrash class="size-3.5" />
-                  <span>{t('common.delete')}</span>
-                </Button>
-                <Button
-                  type="button"
-                  variant={isCreating() ? 'secondary' : 'outline'}
-                  size="sm"
-                  class="w-full h-8 text-xs gap-1 px-1"
-                  onClick={() => {
-                    if (isCreating()) cancelCreating();
-                    else startCreating();
-                  }}
-                  title={isCreating() ? t('barcode.cancelNewPreset') : t('barcode.createNewPreset')}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    class="w-full h-8 text-xs text-destructive hover:text-destructive hover:bg-destructive/10 disabled:text-muted-foreground disabled:hover:bg-transparent disabled:opacity-40 gap-1 px-1"
+                    disabled={!presetKey().startsWith(SERVER_PRESET_PREFIX) || isCreating()}
+                    onClick={handleDeleteCurrentDesign}
+                    title={
+                      !presetKey().startsWith(SERVER_PRESET_PREFIX)
+                        ? t('barcode.builtinCannotDelete')
+                        : t('barcode.deleteCustomPreset')
+                    }
+                  >
+                    <IconTrash class="size-3.5" />
+                    <span>{t('common.delete')}</span>
+                  </Button>
+                </Show>
+
+                <Show
+                  when={canCreateDesign()}
+                  fallback={<div />}
                 >
-                  <Show when={isCreating()} fallback={<IconPlus class="size-3.5" />}>
-                    <IconX class="size-3.5" />
-                  </Show>
-                  <span>{isCreating() ? t('common.cancel') : t('barcode.newPreset')}</span>
-                </Button>
+                  <Button
+                    type="button"
+                    variant={isCreating() ? 'secondary' : 'outline'}
+                    size="sm"
+                    class="w-full h-8 text-xs gap-1 px-1"
+                    onClick={() => {
+                      if (isCreating()) cancelCreating();
+                      else startCreating();
+                    }}
+                    title={isCreating() ? t('barcode.cancelNewPreset') : t('barcode.createNewPreset')}
+                  >
+                    <Show when={isCreating()} fallback={<IconPlus class="size-3.5" />}>
+                      <IconX class="size-3.5" />
+                    </Show>
+                    <span>{isCreating() ? t('common.cancel') : t('barcode.newPreset')}</span>
+                  </Button>
+                </Show>
               </div>
             </div>
           </Show>
@@ -245,7 +260,7 @@ export const PresetsTab: Component = () => {
             </div>
 
             {/* Design Name */}
-            <Show when={isAdmin() || presetKey() === 'custom'}>
+            <Show when={auth.hasAnyPermission('design:create', 'design:update') || presetKey() === 'custom'}>
               <div>
                 <label class="block text-muted-foreground text-xs mb-1">{t('barcode.designName')}</label>
                 <input
@@ -486,49 +501,55 @@ export const PresetsTab: Component = () => {
             </label>
 
             {/* Bottom Action Buttons */}
-            <Show when={isAdmin()}>
+            <Show when={auth.hasAnyPermission('design:create', 'design:update')}>
               <div class="pt-3 border-t border-border flex items-center justify-end gap-2">
                 <Show
                   when={isCreating()}
                   fallback={
                     <>
-                      <Button
-                        type="button"
-                        variant="outline"
-                        size="sm"
-                        class="h-8 px-2.5 text-xs gap-1"
-                        disabled={isSaving()}
-                        onClick={handleSaveAsCopy}
-                        title={t('barcode.saveAsCopyTitle')}
-                      >
-                        <IconCopy class="size-3.5" />
-                        <span>{t('barcode.createCopy')}</span>
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        class="h-8 px-3 text-xs gap-1"
-                        disabled={isSaving()}
-                        onClick={handleUpdateDesign}
-                        title={t('barcode.saveChangesTitle')}
-                      >
-                        <IconDeviceFloppy class="size-3.5" />
-                        <span>{isSaving() ? t('common.saving') : t('common.save')}</span>
-                      </Button>
+                      <Show when={canCreateDesign()}>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          class="h-8 px-2.5 text-xs gap-1"
+                          disabled={isSaving()}
+                          onClick={handleSaveAsCopy}
+                          title={t('barcode.saveAsCopyTitle')}
+                        >
+                          <IconCopy class="size-3.5" />
+                          <span>{t('barcode.createCopy')}</span>
+                        </Button>
+                      </Show>
+                      <Show when={canUpdateDesign()}>
+                        <Button
+                          type="button"
+                          size="sm"
+                          class="h-8 px-3 text-xs gap-1"
+                          disabled={isSaving()}
+                          onClick={handleUpdateDesign}
+                          title={t('barcode.saveChangesTitle')}
+                        >
+                          <IconDeviceFloppy class="size-3.5" />
+                          <span>{isSaving() ? t('common.saving') : t('common.save')}</span>
+                        </Button>
+                      </Show>
                     </>
                   }
                 >
-                  <Button
-                    type="button"
-                    size="sm"
-                    class="h-8 px-3 text-xs gap-1"
-                    disabled={isSaving()}
-                    onClick={handleSaveNewDesign}
-                    title={t('barcode.saveReusablePresetTitle')}
-                  >
-                    <IconDeviceFloppy class="size-3.5" />
-                    <span>{isSaving() ? t('common.saving') : t('barcode.savePreset')}</span>
-                  </Button>
+                  <Show when={canCreateDesign()}>
+                    <Button
+                      type="button"
+                      size="sm"
+                      class="h-8 px-3 text-xs gap-1"
+                      disabled={isSaving()}
+                      onClick={handleSaveNewDesign}
+                      title={t('barcode.saveReusablePresetTitle')}
+                    >
+                      <IconDeviceFloppy class="size-3.5" />
+                      <span>{isSaving() ? t('common.saving') : t('barcode.savePreset')}</span>
+                    </Button>
+                  </Show>
                 </Show>
               </div>
             </Show>
