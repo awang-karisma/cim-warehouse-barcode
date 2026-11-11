@@ -21,7 +21,8 @@ func TestTokenGenerationAndValidation(t *testing.T) {
 		Role:    "user",
 	}
 
-	tokenStr, err := auth.GenerateToken(secret, user, nil)
+	perms := []string{"design:read", "preset:read"}
+	tokenStr, err := auth.GenerateToken(secret, user, nil, perms)
 	if err != nil {
 		t.Fatalf("GenerateToken failed: %v", err)
 	}
@@ -46,11 +47,13 @@ func TestTokenGenerationAndValidation(t *testing.T) {
 	if claims.Role != "user" {
 		t.Errorf("expected role 'user', got %q", claims.Role)
 	}
+	if len(claims.Permissions) != 2 || claims.Permissions[0] != "design:read" {
+		t.Errorf("expected permissions %v, got %v", perms, claims.Permissions)
+	}
 }
-
 func TestMissingJWTSecretHasStableIdentity(t *testing.T) {
 	user := &model.User{Email: "user@example.com", Role: "user"}
-	if _, err := auth.GenerateToken("", user, nil); !errors.Is(err, auth.ErrMissingJWTSecret) {
+	if _, err := auth.GenerateToken("", user, nil, nil); !errors.Is(err, auth.ErrMissingJWTSecret) {
 		t.Fatalf("GenerateToken missing secret should return ErrMissingJWTSecret, got: %v", err)
 	}
 	if _, err := auth.ValidateToken("", "token"); !errors.Is(err, auth.ErrMissingJWTSecret) {
@@ -68,7 +71,7 @@ func TestSuperadminElevation(t *testing.T) {
 	}
 
 	superadminEmails := []string{"other@example.com", "admin@example.com"}
-	tokenStr, err := auth.GenerateToken(secret, user, superadminEmails)
+	tokenStr, err := auth.GenerateToken(secret, user, superadminEmails, []string{"design:read"})
 	if err != nil {
 		t.Fatalf("GenerateToken failed: %v", err)
 	}
@@ -81,8 +84,10 @@ func TestSuperadminElevation(t *testing.T) {
 	if claims.Role != "superadmin" {
 		t.Errorf("expected role 'superadmin', got %q", claims.Role)
 	}
+	if claims.Permissions != nil {
+		t.Errorf("expected nil permissions for superadmin in token, got %v", claims.Permissions)
+	}
 }
-
 func TestValidateToken_InvalidSignature(t *testing.T) {
 	secret := "secret-one"
 	user := &model.User{
@@ -90,7 +95,7 @@ func TestValidateToken_InvalidSignature(t *testing.T) {
 		Role:  "user",
 	}
 
-	tokenStr, err := auth.GenerateToken(secret, user, nil)
+	tokenStr, err := auth.GenerateToken(secret, user, nil, nil)
 	if err != nil {
 		t.Fatalf("GenerateToken failed: %v", err)
 	}

@@ -16,6 +16,17 @@ type User struct {
 	UpdatedAt time.Time `json:"updated_at"`
 }
 
+// Role represents a system or custom RBAC role.
+type Role struct {
+	ID          int64     `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	IsSystem    bool      `json:"is_system"`
+	Permissions []string  `json:"permissions,omitempty"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+}
+
 // LabelLayoutPreset stores a reusable label-element arrangement independently of paper dimensions.
 type LabelLayoutPreset struct {
 	ID          int64  `json:"id,omitempty"`

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/auth"
@@ -57,7 +58,17 @@ func (s *Server) handleGoogleCallback(c fiber.Ctx) error {
 		superadminEmails = strings.Split(s.appConfig.SuperadminEmails, ",")
 	}
 
-	token, err := auth.GenerateToken(s.appConfig.JWTSecret, user, superadminEmails)
+	effectiveRole := user.Role
+	if s.appConfig.IsSuperadmin(user.Email) {
+		effectiveRole = string(model.RoleSuperadmin)
+	}
+
+	var userPerms []string
+	if effectiveRole != string(model.RoleSuperadmin) {
+		userPerms, _ = s.resolvePermissions(ctx, effectiveRole)
+	}
+
+	token, err := auth.GenerateToken(s.appConfig.JWTSecret, user, superadminEmails, userPerms)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": fmt.Sprintf("failed to generate session token: %v", err)})
 	}
@@ -72,18 +83,22 @@ func (s *Server) handleGoogleCallback(c fiber.Ctx) error {
 		MaxAge:   86400,
 	})
 
-	role := user.Role
-	if s.appConfig.IsSuperadmin(user.Email) {
-		role = string(model.RoleSuperadmin)
+	respPerms := userPerms
+	if effectiveRole == string(model.RoleSuperadmin) {
+		respPerms = []string{"*"}
+	}
+	if respPerms == nil {
+		respPerms = []string{}
 	}
 
 	return c.JSON(fiber.Map{
 		"user": fiber.Map{
-			"email":   user.Email,
-			"name":    user.Name,
-			"picture": user.Picture,
-			"role":    role,
-			"locale":  user.Locale,
+			"email":       user.Email,
+			"name":        user.Name,
+			"picture":     user.Picture,
+			"role":        effectiveRole,
+			"locale":      user.Locale,
+			"permissions": respPerms,
 		},
 	})
 }
@@ -117,13 +132,22 @@ func (s *Server) handleAuthMe(c fiber.Ctx) error {
 		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "not authenticated"})
 	}
 
+	respPerms := refreshedClaims.Permissions
+	if model.UserRole(refreshedClaims.Role) == model.RoleSuperadmin || (s.appConfig != nil && s.appConfig.IsSuperadmin(refreshedClaims.Email)) {
+		respPerms = []string{"*"}
+	}
+	if respPerms == nil {
+		respPerms = []string{}
+	}
+
 	return c.JSON(fiber.Map{
 		"user": fiber.Map{
-			"email":   refreshedClaims.Email,
-			"name":    refreshedClaims.Name,
-			"picture": refreshedClaims.Picture,
-			"role":    refreshedClaims.Role,
-			"locale":  refreshedClaims.Locale,
+			"email":       refreshedClaims.Email,
+			"name":        refreshedClaims.Name,
+			"picture":     refreshedClaims.Picture,
+			"role":        refreshedClaims.Role,
+			"locale":      refreshedClaims.Locale,
+			"permissions": respPerms,
 		},
 	})
 }
@@ -136,7 +160,7 @@ func (s *Server) handleLogout(c fiber.Ctx) error {
 
 // handleListUsers returns all users in the system.
 func (s *Server) handleListUsers(c fiber.Ctx) error {
-	if err := s.requireRole(c, string(model.RoleAdmin)); err != nil {
+	if err := s.requirePermission(c, string(model.PermUserRead)); err != nil {
 		return err
 	}
 	if s.store == nil {
@@ -165,8 +189,13 @@ type setUserRoleReq struct {
 
 // handleSetUserRole changes a user's role to 'user' or 'admin'.
 func (s *Server) handleSetUserRole(c fiber.Ctx) error {
-	if err := s.requireRole(c, string(model.RoleAdmin)); err != nil {
-		return err
+	hasUpdate := s.requirePermission(c, string(model.PermUserUpdate)) == nil
+	hasCreate := false
+	if !hasUpdate {
+		if err := s.requirePermission(c, string(model.PermUserCreate)); err != nil {
+			return err
+		}
+		hasCreate = true
 	}
 	if s.store == nil {
 		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
@@ -201,19 +230,24 @@ func (s *Server) handleSetUserRole(c fiber.Ctx) error {
 	if err := json.Unmarshal(c.Body(), &req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
-	if model.UserRole(req.Role) != model.RoleUser && model.UserRole(req.Role) != model.RoleAdmin {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role must be 'user' or 'admin'"})
+	req.Role = strings.TrimSpace(req.Role)
+	if req.Role == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role is required"})
+	}
+	if strings.EqualFold(req.Role, string(model.RoleSuperadmin)) {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cannot assign superadmin role"})
 	}
 
-	isCallerSuperadmin := false
-	if claims, ok := c.Locals("user").(*auth.Claims); ok && claims != nil {
-		if model.UserRole(claims.Role) == model.RoleSuperadmin || (s.appConfig != nil && s.appConfig.IsSuperadmin(claims.Email)) {
-			isCallerSuperadmin = true
-		}
+	exists, err := s.store.RoleExists(c.Context(), req.Role)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	if !exists {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("role %q does not exist", req.Role)})
 	}
 
-	if !isCallerSuperadmin {
-		// Admin requests are allowed ONLY for the exact transition guest -> user
+	// Callers with only user:create (not user:update) are restricted to guest -> user approval
+	if !hasUpdate && hasCreate {
 		if model.UserRole(targetUser.Role) != model.RoleGuest || model.UserRole(req.Role) != model.RoleUser {
 			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "insufficient permissions"})
 		}
@@ -231,7 +265,7 @@ func (s *Server) handleSetUserRole(c fiber.Ctx) error {
 
 // handleDeleteUser deletes a user by email.
 func (s *Server) handleDeleteUser(c fiber.Ctx) error {
-	if err := s.requireRole(c, string(model.RoleAdmin)); err != nil {
+	if err := s.requirePermission(c, string(model.PermUserDelete)); err != nil {
 		return err
 	}
 	if s.store == nil {
@@ -269,23 +303,238 @@ func (s *Server) handleDeleteUser(c fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "cannot delete superadmin"})
 	}
 
-	isCallerSuperadmin := false
-	if claims, ok := c.Locals("user").(*auth.Claims); ok && claims != nil {
-		if model.UserRole(claims.Role) == model.RoleSuperadmin || (s.appConfig != nil && s.appConfig.IsSuperadmin(claims.Email)) {
-			isCallerSuperadmin = true
-		}
-	}
-
-	if !isCallerSuperadmin {
-		// Admin can only delete targets whose current DB role is "guest" or "user"
-		if model.UserRole(targetUser.Role) != model.RoleGuest && model.UserRole(targetUser.Role) != model.RoleUser {
-			return c.Status(fiber.StatusForbidden).JSON(fiber.Map{"error": "insufficient permissions"})
-		}
-	}
-
+	// user:delete permission allows deleting any non-superadmin user
 	if err := s.store.DeleteUser(c.Context(), targetUser.Email); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
 	return c.JSON(fiber.Map{"status": string(ResultOK)})
+}
+
+// Role management handlers
+
+func (s *Server) handleListRoles(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleRead)); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
+	}
+
+	roles, err := s.store.GetRoles(c.Context())
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"roles": roles})
+}
+
+type createRoleReq struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Permissions []string `json:"permissions"`
+}
+
+func (s *Server) handleCreateRole(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleCreate)); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
+	}
+
+	var req createRoleReq
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+	trimmedName := strings.TrimSpace(req.Name)
+	if trimmedName == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "role name is required"})
+	}
+	for _, p := range req.Permissions {
+		if !model.ValidPermission(strings.TrimSpace(p)) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("invalid permission %q", p)})
+		}
+	}
+
+	role, err := s.store.CreateRole(c.Context(), trimmedName, req.Description)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	if len(req.Permissions) > 0 {
+		if err := s.store.SetRolePermissions(c.Context(), role.ID, req.Permissions); err != nil {
+			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+		}
+		role.Permissions = req.Permissions
+	}
+	return c.Status(fiber.StatusCreated).JSON(role)
+}
+
+type updateRoleReq struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+func (s *Server) handleUpdateRole(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleUpdate)); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
+	}
+
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid role id"})
+	}
+
+	existing, err := s.store.GetRoleByID(c.Context(), id)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "role not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	var req updateRoleReq
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	if err := s.store.UpdateRole(c.Context(), id, req.Name, req.Description); err != nil {
+		if errors.Is(err, storage.ErrSystemRole) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if s.permCache != nil && existing != nil {
+		s.permCache.Invalidate(existing.Name)
+	}
+
+	updated, err := s.store.GetRoleByID(c.Context(), id)
+	if err != nil {
+		return c.JSON(fiber.Map{"status": string(ResultOK)})
+	}
+	return c.JSON(updated)
+}
+
+func (s *Server) handleDeleteRole(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleDelete)); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
+	}
+
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid role id"})
+	}
+
+	existing, err := s.store.GetRoleByID(c.Context(), id)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "role not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if err := s.store.DeleteRole(c.Context(), id); err != nil {
+		if errors.Is(err, storage.ErrSystemRole) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+		}
+		if errors.Is(err, storage.ErrRoleInUse) {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": err.Error()})
+		}
+		if errors.Is(err, storage.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "role not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if s.permCache != nil && existing != nil {
+		s.permCache.Invalidate(existing.Name)
+	}
+	return c.JSON(fiber.Map{"status": string(ResultOK)})
+}
+
+func (s *Server) handleGetRolePermissions(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleRead)); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
+	}
+
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid role id"})
+	}
+
+	if _, err := s.store.GetRoleByID(c.Context(), id); err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "role not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	perms, err := s.store.GetRolePermissions(c.Context(), id)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{"permissions": perms})
+}
+
+type setRolePermissionsReq struct {
+	Permissions []string `json:"permissions"`
+}
+
+func (s *Server) handleSetRolePermissions(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleUpdate)); err != nil {
+		return err
+	}
+	if s.store == nil {
+		return c.Status(fiber.StatusServiceUnavailable).JSON(fiber.Map{"error": "storage service not available"})
+	}
+
+	id, err := strconv.ParseInt(c.Params("id"), 10, 64)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid role id"})
+	}
+
+	existing, err := s.store.GetRoleByID(c.Context(), id)
+	if err != nil {
+		if errors.Is(err, storage.ErrNotFound) {
+			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "role not found"})
+		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	var req setRolePermissionsReq
+	if err := json.Unmarshal(c.Body(), &req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
+	}
+
+	for _, p := range req.Permissions {
+		if !model.ValidPermission(strings.TrimSpace(p)) {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("invalid permission %q", p)})
+		}
+	}
+
+	if err := s.store.SetRolePermissions(c.Context(), id, req.Permissions); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+
+	if s.permCache != nil && existing != nil {
+		s.permCache.Invalidate(existing.Name)
+	}
+
+	return c.JSON(fiber.Map{"status": string(ResultOK), "permissions": req.Permissions})
+}
+
+func (s *Server) handleListPermissions(c fiber.Ctx) error {
+	if err := s.requirePermission(c, string(model.PermRoleRead)); err != nil {
+		return err
+	}
+	return c.JSON(fiber.Map{"permissions": model.AllPermissions})
 }

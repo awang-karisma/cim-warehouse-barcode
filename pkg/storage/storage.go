@@ -17,6 +17,14 @@ import (
 // ErrNotFound is returned when an entity is not found in storage.
 var ErrNotFound = errors.New("not found")
 
+// ErrRoleInUse is returned when attempting to delete a role assigned to users.
+var ErrRoleInUse = errors.New("role is currently assigned to users")
+
+// ErrSystemRole is returned when attempting to delete or rename a system role.
+var ErrSystemRole = errors.New("cannot modify or delete system role")
+
+// ErrInvalidPermission is returned when an unrecognized permission string is provided.
+var ErrInvalidPermission = errors.New("invalid permission")
 // TableStat represents table row count metrics.
 type TableStat struct {
 	RowCount int `json:"row_count"`
@@ -124,6 +132,21 @@ func (s *Storage) migrate() error {
 		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
 		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
 	);
+
+	CREATE TABLE IF NOT EXISTS roles (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		description TEXT NOT NULL DEFAULT '',
+		is_system   INTEGER NOT NULL DEFAULT 0,
+		created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
+
+	CREATE TABLE IF NOT EXISTS role_permissions (
+		role_id    INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
+		permission TEXT NOT NULL,
+		PRIMARY KEY (role_id, permission)
+	);
 	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
@@ -135,13 +158,86 @@ func (s *Storage) migrate() error {
 	_, _ = s.db.Exec(`ALTER TABLE page_designs ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}';`)
 	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'id';`)
 
+
+	// Seed system roles (idempotent)
+	systemRoles := []struct{ name, desc string }{
+		{"guest", "Newly registered, pending approval"},
+		{"user", "Standard warehouse operator"},
+		{"admin", "Full access including user and role management"},
+		{"superadmin", "Unrestricted system access (env-configured)"},
+	}
+	for _, r := range systemRoles {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO roles (name, description, is_system) VALUES (?, ?, 1)`, r.name, r.desc); err != nil {
+			return fmt.Errorf("failed to seed system role %s: %w", r.name, err)
+		}
+	}
+
+	// Seed default permissions for user and admin roles
+	userPerms := []string{
+		string(model.PermDesignRead),
+		string(model.PermPresetRead),
+		string(model.PermAccurateRead),
+		string(model.PermAccurateCreate),
+		string(model.PermAccurateUpdate),
+		string(model.PermAccurateDelete),
+		string(model.PermSystemRead),
+	}
+	adminPerms := make([]string, len(model.AllPermissions))
+	for i, p := range model.AllPermissions {
+		adminPerms[i] = string(p)
+	}
+
+	rolePermSeeds := []struct {
+		roleName string
+		perms    []string
+	}{
+		{"user", userPerms},
+		{"admin", adminPerms},
+	}
+
+	for _, seed := range rolePermSeeds {
+		var roleID int64
+		err := s.db.QueryRow(`SELECT id FROM roles WHERE name = ? COLLATE NOCASE`, seed.roleName).Scan(&roleID)
+		if err != nil {
+			return fmt.Errorf("failed to query role id for %s: %w", seed.roleName, err)
+		}
+
+		var count int
+		err = s.db.QueryRow(`SELECT COUNT(*) FROM role_permissions WHERE role_id = ?`, roleID).Scan(&count)
+		if err != nil {
+			return fmt.Errorf("failed to check role permissions for %s: %w", seed.roleName, err)
+		}
+
+		if count == 0 {
+			tx, err := s.db.Begin()
+			if err != nil {
+				return fmt.Errorf("failed to start tx for seeding role permissions: %w", err)
+			}
+			stmt, err := tx.Prepare(`INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)`)
+			if err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("failed to prepare role permission insert: %w", err)
+			}
+			for _, p := range seed.perms {
+				if _, err := stmt.Exec(roleID, p); err != nil {
+					_ = stmt.Close()
+					_ = tx.Rollback()
+					return fmt.Errorf("failed to insert role permission %s for %s: %w", p, seed.roleName, err)
+				}
+			}
+			_ = stmt.Close()
+			if err := tx.Commit(); err != nil {
+				return fmt.Errorf("failed to commit role permissions for %s: %w", seed.roleName, err)
+			}
+		}
+	}
 	return nil
 }
 
-// GetTableStats returns row counts for users, accurate_session, page_designs, and label_layout_presets tables.
+// GetTableStats returns row counts for users, accurate_session, page_designs, label_layout_presets, roles, and role_permissions tables.
 func (s *Storage) GetTableStats(ctx context.Context) (map[string]TableStat, error) {
 	stats := make(map[string]TableStat)
-	tables := []string{"users", "accurate_session", "page_designs", "label_layout_presets"}
+	tables := []string{"users", "accurate_session", "page_designs", "label_layout_presets", "roles", "role_permissions"}
 	for _, tbl := range tables {
 		var count int
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s", tbl)
@@ -229,19 +325,28 @@ func (s *Storage) GetUsers(ctx context.Context) ([]model.User, error) {
 }
 
 // SetUserRole updates a user's role and updated_at.
-// Reject if role not in {"guest", "user", "admin"}.
+// Reject if role is superadmin or does not exist in roles table.
 func (s *Storage) SetUserRole(ctx context.Context, email, role string) error {
 	trimmedEmail := strings.TrimSpace(email)
 	if trimmedEmail == "" {
 		return fmt.Errorf("email cannot be empty")
 	}
-	switch model.UserRole(role) {
-	case model.RoleGuest, model.RoleUser, model.RoleAdmin:
-	default:
-		return fmt.Errorf("invalid role %q: must be guest, user, or admin", role)
+	trimmedRole := strings.TrimSpace(role)
+	if trimmedRole == "" {
+		return fmt.Errorf("role cannot be empty")
+	}
+	if strings.EqualFold(trimmedRole, string(model.RoleSuperadmin)) {
+		return fmt.Errorf("cannot assign superadmin role: superadmin is configured via environment only")
+	}
+	exists, err := s.RoleExists(ctx, trimmedRole)
+	if err != nil {
+		return fmt.Errorf("failed to check role existence: %w", err)
+	}
+	if !exists {
+		return fmt.Errorf("role %q does not exist", role)
 	}
 	now := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET role = ?, updated_at = ? WHERE email = ? COLLATE NOCASE`, role, now, trimmedEmail)
+	res, err := s.db.ExecContext(ctx, `UPDATE users SET role = ?, updated_at = ? WHERE email = ? COLLATE NOCASE`, trimmedRole, now, trimmedEmail)
 	if err != nil {
 		return fmt.Errorf("failed to update user role: %w", err)
 	}
@@ -677,4 +782,385 @@ func (s *Storage) DeletePageDesign(ctx context.Context, id int64) error {
 		return fmt.Errorf("page design %d: %w", id, ErrNotFound)
 	}
 	return nil
+}
+
+// RoleExists reports whether a role with the given name exists (case-insensitive).
+func (s *Storage) RoleExists(ctx context.Context, name string) (bool, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return false, nil
+	}
+	var exists int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM roles WHERE name = ? COLLATE NOCASE LIMIT 1`, trimmed).Scan(&exists)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		return false, fmt.Errorf("failed to check role existence: %w", err)
+	}
+	return true, nil
+}
+
+// CountUsersWithRole returns how many users are assigned to the specified role name.
+func (s *Storage) CountUsersWithRole(ctx context.Context, roleName string) (int, error) {
+	trimmed := strings.TrimSpace(roleName)
+	if trimmed == "" {
+		return 0, nil
+	}
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = ? COLLATE NOCASE`, trimmed).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count users with role %s: %w", roleName, err)
+	}
+	return count, nil
+}
+
+// GetRoles returns all roles ordered by ID ascending, with their permissions populated.
+func (s *Storage) GetRoles(ctx context.Context) ([]model.Role, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, description, is_system, created_at, updated_at FROM roles ORDER BY id ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query roles: %w", err)
+	}
+	defer rows.Close()
+
+	var roles []model.Role
+	for rows.Next() {
+		var r model.Role
+		var isSystem int
+		if err := rows.Scan(&r.ID, &r.Name, &r.Description, &isSystem, &r.CreatedAt, &r.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan role: %w", err)
+		}
+		r.IsSystem = isSystem != 0
+		r.Permissions = []string{}
+		roles = append(roles, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate roles: %w", err)
+	}
+	if roles == nil {
+		return []model.Role{}, nil
+	}
+
+	pRows, err := s.db.QueryContext(ctx, `SELECT role_id, permission FROM role_permissions ORDER BY permission ASC`)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query role permissions: %w", err)
+	}
+	defer pRows.Close()
+
+	permsByRole := make(map[int64][]string)
+	for pRows.Next() {
+		var rID int64
+		var perm string
+		if err := pRows.Scan(&rID, &perm); err != nil {
+			return nil, fmt.Errorf("failed to scan role permission: %w", err)
+		}
+		permsByRole[rID] = append(permsByRole[rID], perm)
+	}
+	if err := pRows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate role permissions: %w", err)
+	}
+
+	for i := range roles {
+		if perms, ok := permsByRole[roles[i].ID]; ok {
+			roles[i].Permissions = perms
+		}
+	}
+
+	return roles, nil
+}
+
+// GetRoleByID returns a role by its primary key ID, or ErrNotFound.
+func (s *Storage) GetRoleByID(ctx context.Context, id int64) (*model.Role, error) {
+	var r model.Role
+	var isSystem int
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE id = ?`, id).
+		Scan(&r.ID, &r.Name, &r.Description, &isSystem, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to query role by id %d: %w", id, err)
+	}
+	r.IsSystem = isSystem != 0
+	perms, err := s.GetRolePermissions(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	r.Permissions = perms
+	return &r, nil
+}
+
+// GetRoleByName returns a role by its name (case-insensitive), or ErrNotFound.
+func (s *Storage) GetRoleByName(ctx context.Context, name string) (*model.Role, error) {
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" {
+		return nil, ErrNotFound
+	}
+	var r model.Role
+	var isSystem int
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE name = ? COLLATE NOCASE`, trimmed).
+		Scan(&r.ID, &r.Name, &r.Description, &isSystem, &r.CreatedAt, &r.UpdatedAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("failed to query role by name %s: %w", trimmed, err)
+	}
+	r.IsSystem = isSystem != 0
+	perms, err := s.GetRolePermissions(ctx, r.ID)
+	if err != nil {
+		return nil, err
+	}
+	r.Permissions = perms
+	return &r, nil
+}
+
+// CreateRole creates a new custom role (is_system = 0).
+func (s *Storage) CreateRole(ctx context.Context, name, description string) (*model.Role, error) {
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return nil, fmt.Errorf("role name cannot be empty")
+	}
+	systemNames := []string{
+		string(model.RoleGuest),
+		string(model.RoleUser),
+		string(model.RoleAdmin),
+		string(model.RoleSuperadmin),
+	}
+	for _, sn := range systemNames {
+		if strings.EqualFold(trimmedName, sn) {
+			return nil, fmt.Errorf("role name %q conflicts with system role name", trimmedName)
+		}
+	}
+	exists, err := s.RoleExists(ctx, trimmedName)
+	if err != nil {
+		return nil, err
+	}
+	if exists {
+		return nil, fmt.Errorf("role %q already exists", trimmedName)
+	}
+
+	now := time.Now().UTC()
+	res, err := s.db.ExecContext(ctx, `INSERT INTO roles (name, description, is_system, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`, trimmedName, strings.TrimSpace(description), now, now)
+	if err != nil {
+		return nil, fmt.Errorf("failed to insert role: %w", err)
+	}
+	id, err := res.LastInsertId()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get last insert id: %w", err)
+	}
+	return s.GetRoleByID(ctx, id)
+}
+
+// UpdateRole updates a role's name and description. System roles can only have description updated.
+func (s *Storage) UpdateRole(ctx context.Context, id int64, name, description string) error {
+	r, err := s.GetRoleByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	trimmedName := strings.TrimSpace(name)
+	if trimmedName == "" {
+		return fmt.Errorf("role name cannot be empty")
+	}
+	trimmedDesc := strings.TrimSpace(description)
+
+	if r.IsSystem {
+		if !strings.EqualFold(r.Name, trimmedName) {
+			return fmt.Errorf("cannot rename system role %q: %w", r.Name, ErrSystemRole)
+		}
+		now := time.Now().UTC()
+		_, err := s.db.ExecContext(ctx, `UPDATE roles SET description = ?, updated_at = ? WHERE id = ?`, trimmedDesc, now, id)
+		if err != nil {
+			return fmt.Errorf("failed to update system role description: %w", err)
+		}
+		return nil
+	}
+
+	if !strings.EqualFold(r.Name, trimmedName) {
+		systemNames := []string{
+			string(model.RoleGuest),
+			string(model.RoleUser),
+			string(model.RoleAdmin),
+			string(model.RoleSuperadmin),
+		}
+		for _, sn := range systemNames {
+			if strings.EqualFold(trimmedName, sn) {
+				return fmt.Errorf("role name %q conflicts with system role name", trimmedName)
+			}
+		}
+		exists, err := s.RoleExists(ctx, trimmedName)
+		if err != nil {
+			return err
+		}
+		if exists {
+			return fmt.Errorf("role %q already exists", trimmedName)
+		}
+	}
+
+	now := time.Now().UTC()
+	_, err = s.db.ExecContext(ctx, `UPDATE roles SET name = ?, description = ?, updated_at = ? WHERE id = ?`, trimmedName, trimmedDesc, now, id)
+	if err != nil {
+		return fmt.Errorf("failed to update role: %w", err)
+	}
+	return nil
+}
+
+// DeleteRole deletes a custom role by ID. Returns error if role is system role or assigned to users.
+func (s *Storage) DeleteRole(ctx context.Context, id int64) error {
+	r, err := s.GetRoleByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if r.IsSystem {
+		return fmt.Errorf("cannot delete system role %q: %w", r.Name, ErrSystemRole)
+	}
+	userCount, err := s.CountUsersWithRole(ctx, r.Name)
+	if err != nil {
+		return err
+	}
+	if userCount > 0 {
+		return fmt.Errorf("%d user(s) currently assigned to role %q: %w", userCount, r.Name, ErrRoleInUse)
+	}
+	res, err := s.db.ExecContext(ctx, `DELETE FROM roles WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("failed to delete role: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rows == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// GetRolePermissions returns all permissions configured for a role ID.
+func (s *Storage) GetRolePermissions(ctx context.Context, roleID int64) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT permission FROM role_permissions WHERE role_id = ? ORDER BY permission ASC`, roleID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query role permissions for role %d: %w", roleID, err)
+	}
+	defer rows.Close()
+
+	var perms []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+		perms = append(perms, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate permissions: %w", err)
+	}
+	if perms == nil {
+		perms = []string{}
+	}
+	return perms, nil
+}
+
+// SetRolePermissions sets the permissions for a role, replacing existing ones.
+// Rejects modification of superadmin and guest roles, and validates permission names against the registry.
+func (s *Storage) SetRolePermissions(ctx context.Context, roleID int64, permissions []string) error {
+	r, err := s.GetRoleByID(ctx, roleID)
+	if err != nil {
+		return err
+	}
+	if strings.EqualFold(r.Name, string(model.RoleSuperadmin)) {
+		return fmt.Errorf("superadmin permissions cannot be modified: superadmin bypasses all checks")
+	}
+	if strings.EqualFold(r.Name, string(model.RoleGuest)) {
+		return fmt.Errorf("guest permissions cannot be modified: guest has no permissions")
+	}
+
+	seen := make(map[string]bool)
+	var deduped []string
+	for _, p := range permissions {
+		trimmed := strings.TrimSpace(p)
+		if !model.ValidPermission(trimmed) {
+			return fmt.Errorf("invalid permission %q: %w", p, ErrInvalidPermission)
+		}
+		if !seen[trimmed] {
+			seen[trimmed] = true
+			deduped = append(deduped, trimmed)
+		}
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if _, err := tx.ExecContext(ctx, `DELETE FROM role_permissions WHERE role_id = ?`, roleID); err != nil {
+		return fmt.Errorf("failed to delete existing permissions: %w", err)
+	}
+
+	if len(deduped) > 0 {
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)`)
+		if err != nil {
+			return fmt.Errorf("failed to prepare permission insert: %w", err)
+		}
+		defer stmt.Close()
+
+		for _, p := range deduped {
+			if _, err := stmt.ExecContext(ctx, roleID, p); err != nil {
+				return fmt.Errorf("failed to insert permission %s: %w", p, err)
+			}
+		}
+	}
+
+	now := time.Now().UTC()
+	if _, err := tx.ExecContext(ctx, `UPDATE roles SET updated_at = ? WHERE id = ?`, now, roleID); err != nil {
+		return fmt.Errorf("failed to update role updated_at: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit permission changes: %w", err)
+	}
+	return nil
+}
+
+// GetPermissionsByRoleName returns permissions configured for the role with the given name.
+func (s *Storage) GetPermissionsByRoleName(ctx context.Context, roleName string) ([]string, error) {
+	trimmed := strings.TrimSpace(roleName)
+	if trimmed == "" {
+		return nil, ErrNotFound
+	}
+	exists, err := s.RoleExists(ctx, trimmed)
+	if err != nil {
+		return nil, err
+	}
+	if !exists {
+		return nil, ErrNotFound
+	}
+
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT p.permission
+		FROM role_permissions p
+		JOIN roles r ON r.id = p.role_id
+		WHERE r.name = ? COLLATE NOCASE
+		ORDER BY p.permission ASC
+	`, trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query permissions for role %s: %w", trimmed, err)
+	}
+	defer rows.Close()
+
+	var perms []string
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err != nil {
+			return nil, fmt.Errorf("failed to scan permission: %w", err)
+		}
+		perms = append(perms, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("failed to iterate permissions: %w", err)
+	}
+	if perms == nil {
+		perms = []string{}
+	}
+	return perms, nil
 }

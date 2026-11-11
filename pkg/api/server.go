@@ -18,6 +18,7 @@ import (
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/auth"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/config"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/model"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/rbac"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/storage"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/version"
 	"github.com/danielgtaylor/huma/v2"
@@ -43,26 +44,7 @@ func claimsFromContext(ctx context.Context) *auth.Claims {
 	return nil
 }
 
-func roleLevel(role string) int {
-	switch model.UserRole(strings.ToLower(strings.TrimSpace(role))) {
-	case model.RoleSuperadmin:
-		return 4
-	case model.RoleAdmin:
-		return 3
-	case model.RoleUser:
-		return 2
-	case model.RoleGuest:
-		return 1
-	default:
-		return 0
-	}
-}
-
-func hasMinRole(userRole, minRole string) bool {
-	return roleLevel(userRole) >= roleLevel(minRole)
-}
-
-func (s *Server) requireRole(c fiber.Ctx, minRole string) error {
+func (s *Server) requirePermission(c fiber.Ctx, perm string) error {
 	if s.appConfig == nil || s.appConfig.GoogleClientID == "" {
 		return nil
 	}
@@ -70,16 +52,40 @@ func (s *Server) requireRole(c fiber.Ctx, minRole string) error {
 	if !ok || claims == nil {
 		return fiber.NewError(fiber.StatusUnauthorized, "authentication required")
 	}
-	if !hasMinRole(claims.Role, minRole) {
-		return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+	// Superadmin always passes
+	if model.UserRole(claims.Role) == model.RoleSuperadmin || (s.appConfig != nil && s.appConfig.IsSuperadmin(claims.Email)) {
+		return nil
 	}
-	return nil
+	// Check permission list
+	for _, p := range claims.Permissions {
+		if p == perm {
+			return nil
+		}
+	}
+	return fiber.NewError(fiber.StatusForbidden, "insufficient permissions")
+}
+
+func (s *Server) resolvePermissions(ctx context.Context, roleName string) ([]string, error) {
+	if s.permCache != nil {
+		if perms, ok := s.permCache.Get(roleName); ok {
+			return perms, nil
+		}
+	}
+	perms, err := s.store.GetPermissionsByRoleName(ctx, roleName)
+	if err != nil {
+		return nil, err
+	}
+	if s.permCache != nil {
+		s.permCache.Set(roleName, perms)
+	}
+	return perms, nil
 }
 
 // Config holds dependencies for creating an API Server.
 type Config struct {
 	Store            *storage.Storage
 	AppConfig        *config.Config
+	PermCache        rbac.PermissionCache
 	AccurateProvider accurate.Provider
 	AccurateSession  *session.Manager
 	AccurateRegistry *adapter.Registry
@@ -91,6 +97,7 @@ type Server struct {
 	humaAPI          huma.API
 	store            *storage.Storage
 	appConfig        *config.Config
+	permCache        rbac.PermissionCache
 	accurateProvider accurate.Provider
 	accurateSession  *session.Manager
 	accurateRegistry *adapter.Registry
@@ -133,11 +140,17 @@ func New(cfg Config) *Server {
 	})
 	humaAPI := humafiber.New(app, humaCfg)
 
+	permCache := cfg.PermCache
+	if permCache == nil {
+		permCache = rbac.NewMemoryCache(5 * time.Minute)
+	}
+
 	s := &Server{
 		app:              app,
 		humaAPI:          humaAPI,
 		store:            cfg.Store,
 		appConfig:        cfg.AppConfig,
+		permCache:        permCache,
 		startTime:        time.Now(),
 		accurateProvider: cfg.AccurateProvider,
 		accurateSession:  cfg.AccurateSession,
@@ -158,6 +171,15 @@ func New(cfg Config) *Server {
 	app.Get("/api/v1/admin/users", s.handleListUsers)
 	app.Put("/api/v1/admin/users/:email/role", s.handleSetUserRole)
 	app.Delete("/api/v1/admin/users/:email", s.handleDeleteUser)
+
+	// Admin role routes (raw Fiber routes)
+	app.Get("/api/v1/admin/roles", s.handleListRoles)
+	app.Post("/api/v1/admin/roles", s.handleCreateRole)
+	app.Put("/api/v1/admin/roles/:id", s.handleUpdateRole)
+	app.Delete("/api/v1/admin/roles/:id", s.handleDeleteRole)
+	app.Get("/api/v1/admin/roles/:id/permissions", s.handleGetRolePermissions)
+	app.Put("/api/v1/admin/roles/:id/permissions", s.handleSetRolePermissions)
+	app.Get("/api/v1/admin/permissions", s.handleListPermissions)
 
 	return s
 }
@@ -258,6 +280,7 @@ func (s *Server) registerOperations() {
 		Summary:     "Get system diagnostics",
 		Description: "Get runtime stats, uptime, port, db path, and SQLite table metrics",
 		Tags:        []string{"system"},
+		Metadata:    map[string]any{"permission": string(model.PermSystemRead)},
 	}, s.handleSystem)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -267,7 +290,7 @@ func (s *Server) registerOperations() {
 		Summary:     "Update user locale",
 		Description: "Persist the current user's preferred language locale ('en' or 'id')",
 		Tags:        []string{"user"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"authenticated": true},
 	}, s.handleSetUserLocale)
 
 	// Custom Page Designs Endpoints
@@ -278,7 +301,7 @@ func (s *Server) registerOperations() {
 		Summary:     "List page designs",
 		Description: "Get all custom page designs for barcode label printing",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermDesignRead)},
 	}, s.handleGetPageDesigns)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -288,7 +311,7 @@ func (s *Server) registerOperations() {
 		Summary:     "Create page design",
 		Description: "Create a new custom page design for barcode label printing",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "admin"},
+		Metadata:    map[string]any{"permission": string(model.PermDesignCreate)},
 	}, s.handleCreatePageDesign)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -298,7 +321,7 @@ func (s *Server) registerOperations() {
 		Summary:     "Update page design",
 		Description: "Update an existing custom page design",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "admin"},
+		Metadata:    map[string]any{"permission": string(model.PermDesignUpdate)},
 	}, s.handleUpdatePageDesign)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -308,7 +331,7 @@ func (s *Server) registerOperations() {
 		Summary:     "Delete page design",
 		Description: "Delete a custom page design",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "admin"},
+		Metadata:    map[string]any{"permission": string(model.PermDesignDelete)},
 	}, s.handleDeletePageDesign)
 
 	// Label Layout Presets Endpoints
@@ -319,7 +342,7 @@ func (s *Server) registerOperations() {
 		Summary:     "List label layout presets",
 		Description: "List reusable barcode label element arrangements",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermPresetRead)},
 	}, s.handleGetLabelLayoutPresets)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -328,7 +351,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/label-layout-presets",
 		Summary:     "Create label layout preset",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "admin"},
+		Metadata:    map[string]any{"permission": string(model.PermPresetCreate)},
 	}, s.handleCreateLabelLayoutPreset)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -337,7 +360,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/label-layout-presets/{id}",
 		Summary:     "Update label layout preset",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "admin"},
+		Metadata:    map[string]any{"permission": string(model.PermPresetUpdate)},
 	}, s.handleUpdateLabelLayoutPreset)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -346,7 +369,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/label-layout-presets/{id}",
 		Summary:     "Delete label layout preset",
 		Tags:        []string{"barcode"},
-		Metadata:    map[string]any{"minRole": "admin"},
+		Metadata:    map[string]any{"permission": string(model.PermPresetDelete)},
 	}, s.handleDeleteLabelLayoutPreset)
 
 	// Accurate Online Integration Endpoints
@@ -356,7 +379,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/status",
 		Summary:     "Get Accurate Online integration status",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateRead)},
 	}, s.handleAccurateStatus)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -365,7 +388,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/login",
 		Summary:     "Login or submit MFA for Accurate Online",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateCreate)},
 	}, s.handleAccurateLogin)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -374,7 +397,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/logout",
 		Summary:     "Log out from Accurate Online session",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateDelete)},
 	}, s.handleAccurateLogout)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -383,7 +406,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/databases",
 		Summary:     "List accessible Accurate databases",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateRead)},
 	}, s.handleAccurateDatabases)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -392,7 +415,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/database",
 		Summary:     "Select and open Accurate database",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateUpdate)},
 	}, s.handleAccurateSelectDatabase)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -401,7 +424,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/items",
 		Summary:     "Search items from Accurate inventory",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateRead)},
 	}, s.handleAccurateItems)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -410,7 +433,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/sources",
 		Summary:     "List registered Accurate transaction sources",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateRead)},
 	}, s.handleAccurateSources)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -419,7 +442,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/sources/{source}/documents",
 		Summary:     "List documents for an Accurate transaction source",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateRead)},
 	}, s.handleAccurateSourceDocuments)
 
 	huma.Register(s.humaAPI, huma.Operation{
@@ -428,7 +451,7 @@ func (s *Server) registerOperations() {
 		Path:        "/api/v1/accurate/sources/{source}/documents/{id}/items",
 		Summary:     "Get line items for an Accurate source document",
 		Tags:        []string{"accurate"},
-		Metadata:    map[string]any{"minRole": "user"},
+		Metadata:    map[string]any{"permission": string(model.PermAccurateRead)},
 	}, s.handleAccurateSourceDocumentItems)
 }
 
@@ -471,6 +494,13 @@ func (s *Server) resolveCurrentUser(ctx context.Context, claims *auth.Claims) (*
 	refreshed.Locale = user.Locale
 	if s.appConfig != nil && s.appConfig.IsSuperadmin(user.Email) {
 		refreshed.Role = "superadmin"
+		refreshed.Permissions = nil
+	} else {
+		perms, err := s.resolvePermissions(ctx, refreshed.Role)
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return nil, false, err
+		}
+		refreshed.Permissions = perms
 	}
 
 	return &refreshed, true, nil
@@ -519,7 +549,7 @@ func (s *Server) authMiddleware(c fiber.Ctx) error {
 	return c.Next()
 }
 
-// humaAuthMiddleware enforces minimum role authorization for Huma operations.
+// humaAuthMiddleware enforces permission authorization for Huma operations.
 func (s *Server) humaAuthMiddleware(ctx huma.Context, next func(huma.Context)) {
 	if s.appConfig == nil || s.appConfig.GoogleClientID == "" {
 		next(ctx)
@@ -537,22 +567,38 @@ func (s *Server) humaAuthMiddleware(ctx huma.Context, next func(huma.Context)) {
 		return
 	}
 
-	minRole := "user"
-	if op.Metadata != nil {
-		if r, ok := op.Metadata["minRole"].(string); ok && r != "" {
-			minRole = r
-		}
-	}
-
 	claims := claimsFromContext(ctx.Context())
 	if claims == nil {
 		_ = huma.WriteErr(s.humaAPI, ctx, http.StatusUnauthorized, "authentication required")
 		return
 	}
 
-	if !hasMinRole(claims.Role, minRole) {
+	// Superadmin always bypasses
+	if model.UserRole(claims.Role) == model.RoleSuperadmin || (s.appConfig != nil && s.appConfig.IsSuperadmin(claims.Email)) {
+		next(ctx)
+		return
+	}
+
+	// Guest has no permissions and is forbidden from protected operations
+	if model.UserRole(claims.Role) == model.RoleGuest {
 		_ = huma.WriteErr(s.humaAPI, ctx, http.StatusForbidden, "insufficient permissions")
 		return
+	}
+
+	if op.Metadata != nil {
+		if requiredPerm, ok := op.Metadata["permission"].(string); ok && requiredPerm != "" {
+			hasPerm := false
+			for _, p := range claims.Permissions {
+				if p == requiredPerm {
+					hasPerm = true
+					break
+				}
+			}
+			if !hasPerm {
+				_ = huma.WriteErr(s.humaAPI, ctx, http.StatusForbidden, "insufficient permissions")
+				return
+			}
+		}
 	}
 
 	next(ctx)

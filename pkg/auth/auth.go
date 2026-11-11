@@ -16,11 +16,12 @@ import (
 // Claims represents the JWT session claims.
 type Claims struct {
 	jwt.RegisteredClaims
-	Email   string `json:"email"`
-	Name    string `json:"name"`
-	Picture string `json:"picture"`
-	Role    string `json:"role"`
-	Locale  string `json:"locale,omitempty"`
+	Email       string   `json:"email"`
+	Name        string   `json:"name"`
+	Picture     string   `json:"picture"`
+	Role        string   `json:"role"`
+	Locale      string   `json:"locale,omitempty"`
+	Permissions []string `json:"permissions,omitempty"`
 }
 
 // ErrMissingJWTSecret identifies token operations attempted without a signing secret.
@@ -29,7 +30,7 @@ var ErrMissingJWTSecret = errors.New("jwt secret cannot be empty")
 // GenerateToken creates an HS256 JWT session token with 24-hour expiry.
 // If the user's email matches any entry in superadminEmails, the role in claims
 // is set to "superadmin" regardless of the role stored in the database.
-func GenerateToken(secret string, user *model.User, superadminEmails []string) (string, error) {
+func GenerateToken(secret string, user *model.User, superadminEmails []string, permissions []string) (string, error) {
 	if secret == "" {
 		return "", ErrMissingJWTSecret
 	}
@@ -45,6 +46,11 @@ func GenerateToken(secret string, user *model.User, superadminEmails []string) (
 		}
 	}
 
+	var perms []string
+	if role != string(model.RoleSuperadmin) && len(permissions) > 0 {
+		perms = permissions
+	}
+
 	now := time.Now().UTC()
 	claims := Claims{
 		RegisteredClaims: jwt.RegisteredClaims{
@@ -52,11 +58,12 @@ func GenerateToken(secret string, user *model.User, superadminEmails []string) (
 			IssuedAt:  jwt.NewNumericDate(now),
 			ExpiresAt: jwt.NewNumericDate(now.Add(24 * time.Hour)),
 		},
-		Email:   user.Email,
-		Name:    user.Name,
-		Picture: user.Picture,
-		Role:    role,
-		Locale:  user.Locale,
+		Email:       user.Email,
+		Name:        user.Name,
+		Picture:     user.Picture,
+		Role:        role,
+		Locale:      user.Locale,
+		Permissions: perms,
 	}
 
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)

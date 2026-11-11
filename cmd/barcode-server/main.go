@@ -19,6 +19,7 @@ import (
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/session"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/api"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/config"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/rbac"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/storage"
 )
 
@@ -68,14 +69,15 @@ func main() {
 	}
 
 	// 4. Start Fiber v3 HTTP server
+	permCache := rbac.NewMemoryCache(cfg.RBACCacheTTL)
 	srv := api.New(api.Config{
 		Store:            store,
 		AppConfig:        cfg,
+		PermCache:        permCache,
 		AccurateProvider: accProv,
 		AccurateSession:  accSession,
 		AccurateRegistry: accRegistry,
 	})
-
 	if embeddedFS != nil {
 		log.Println("Serving embedded SolidJS frontend")
 		srv.SetupStaticFS(embeddedFS)

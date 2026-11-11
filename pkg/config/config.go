@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate"
 	"github.com/joho/godotenv"
@@ -25,7 +26,8 @@ type Config struct {
 	AccurateEmail              string `mapstructure:"accurate_email" json:"-"`
 	AccuratePassword           string `mapstructure:"accurate_password" json:"-"`
 	AccurateAPIToken           string `mapstructure:"accurate_api_token" json:"-"`
-	AccurateAPISignatureSecret string `mapstructure:"accurate_api_signature_secret" json:"-"`
+	AccurateAPISignatureSecret string        `mapstructure:"accurate_api_signature_secret" json:"-"`
+	RBACCacheTTL               time.Duration `mapstructure:"rbac_cache_ttl" json:"rbac_cache_ttl"`
 }
 
 // DefaultConfig returns a Config struct with default configuration values.
@@ -41,6 +43,7 @@ func DefaultConfig() Config {
 		AccuratePassword:           "",
 		AccurateAPIToken:           "",
 		AccurateAPISignatureSecret: "",
+		RBACCacheTTL:               5 * time.Minute,
 	}
 }
 
@@ -69,7 +72,7 @@ func Load(envFiles ...string) (*Config, error) {
 	v.SetDefault("accurate_password", defaults.AccuratePassword)
 	v.SetDefault("accurate_api_token", defaults.AccurateAPIToken)
 	v.SetDefault("accurate_api_signature_secret", defaults.AccurateAPISignatureSecret)
-
+	v.SetDefault("rbac_cache_ttl", "5m")
 	// Bind environment keys
 	_ = v.BindEnv("server_port", "SERVER_PORT", "PORT")
 	_ = v.BindEnv("db_path", "DB_PATH")
@@ -81,10 +84,22 @@ func Load(envFiles ...string) (*Config, error) {
 	_ = v.BindEnv("accurate_password", "ACCURATE_PASSWORD")
 	_ = v.BindEnv("accurate_api_token", "ACCURATE_API_TOKEN")
 	_ = v.BindEnv("accurate_api_signature_secret", "ACCURATE_API_SIGNATURE_SECRET")
+	_ = v.BindEnv("rbac_cache_ttl", "RBAC_CACHE_TTL")
 
 	var cfg Config
 	if err := v.Unmarshal(&cfg); err != nil {
 		return nil, err
+	}
+
+	// Parse RBACCacheTTL duration
+	if ttlStr := v.GetString("rbac_cache_ttl"); ttlStr != "" {
+		if d, err := time.ParseDuration(ttlStr); err == nil && d > 0 {
+			cfg.RBACCacheTTL = d
+		} else {
+			cfg.RBACCacheTTL = 5 * time.Minute
+		}
+	} else {
+		cfg.RBACCacheTTL = 5 * time.Minute
 	}
 
 	if cfg.JWTSecret == "" {
