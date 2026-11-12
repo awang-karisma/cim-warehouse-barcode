@@ -9,6 +9,7 @@ import {
   IconUserCog,
   IconShieldCog,
   IconTestPipe,
+  IconCloudComputing,
   type IconProps,
 } from '@tabler/icons-solidjs';
 import {
@@ -52,6 +53,7 @@ export const AppSidebar: Component = () => {
 
   const canManageUsers = createMemo(() => auth.hasPermission('user:read'));
   const canManageRoles = createMemo(() => auth.hasPermission('role:read'));
+	const canViewAccurate = createMemo(() => auth.hasPermission('accurate_account:read'));
 
   const adminItems = createMemo<NavItem[]>(() => {
     const items: NavItem[] = [];
@@ -68,6 +70,16 @@ export const AppSidebar: Component = () => {
         { href: ROUTES.barcode, label: t('nav.barcodePrinter'), icon: IconBarcode },
       ],
     },
+    ...(canViewAccurate()
+      ? [
+          {
+            label: t('navGroups.integration'),
+            items: [
+              { href: ROUTES.accurate, label: t('nav.accurateAccount'), icon: IconCloudComputing },
+            ],
+          },
+        ]
+      : []),
     ...(adminItems().length > 0
       ? [
           {

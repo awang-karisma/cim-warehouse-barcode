@@ -17,6 +17,18 @@ Warehouse Barcode generates and prints barcode labels for warehouse products, pu
 - **Backend**: Go 1.27, Fiber v3, Huma v2 (OpenAPI 3.1 & Scalar UI), SQLite (`modernc.org/sqlite` pure Go).
 - **Frontend**: SolidJS, Vite, Tailwind CSS v4, Kobalte UI, JsBarcode, datamatrix-svg-ts, qrcode-generator.
 
+## Documentation
+
+Comprehensive architectural and operational documentation is available in [`docs/`](docs/):
+
+- [**Architecture & System Design**](docs/architecture.md) — Monorepo design, dual-layer HTTP routing (Fiber v3 + Huma v2), pure-Go SQLite storage engine, and SPA embedding.
+- [**Barcode & Label Printing Engine**](docs/barcode-printing.md) — Millimeter coordinate model, 9 label element types, 5 barcode symbologies, sheet presets (Tom & Jerry, thermal rolls), and CSS print media rules.
+- [**Accurate Online Integration**](docs/accurate-integration.md) — Dual providers (`web` SAML scraping with TOTP MFA vs `official` HMAC API), session manager, 6 document adapters, and data normalization.
+- [**Security, Authentication & RBAC**](docs/security-rbac.md) — Google OAuth, HS256 JWT sessions, local auth bypass mode, 21 permissions matrix across 6 resources, caching, and SolidJS UI guards.
+- [**REST API Reference**](docs/api-reference.md) — Complete endpoint reference, request/response models, permissions, status codes, and Scalar UI.
+- [**Deployment & Operations Guide**](docs/deployment-and-ops.md) — Environment variables, local dev workflow, single-binary compilation (`make embed`), Docker multi-stage builds, and SQLite maintenance.
+- [**Roadmap & Planned Features**](docs/roadmap.md) — Accurate multi-account support, direct raw thermal printer streaming (ESC/POS & ZPL), and mobile audit modes.
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -26,11 +38,17 @@ Warehouse Barcode generates and prints barcode labels for warehouse products, pu
 | `GOOGLE_CLIENT_ID` | Google OAuth Client ID (empty disables auth) | `""` |
 | `JWT_SECRET` | Secret key for signing session tokens | Auto-generated on startup |
 | `SUPERADMIN_EMAILS` | Comma-separated list of superadmin emails | `""` |
-| `ACCURATE_PROVIDER` | Accurate provider: `web`, `official`, or empty | `""` |
-| `ACCURATE_EMAIL` | Accurate Online account email (for `web` provider) | `""` |
-| `ACCURATE_PASSWORD` | Accurate Online account password (for `web` provider) | `""` |
-| `ACCURATE_API_TOKEN` | Accurate API token (for `official` provider) | `""` |
-| `ACCURATE_API_SIGNATURE_SECRET` | Accurate API signature secret (for `official` provider) | `""` |
+| `ACCURATE_ENCRYPTION_KEY` | Stable 32-byte encryption key as 64 hexadecimal characters; required for stored account credentials | `""` |
+
+### Generating secrets
+
+Generate independent random values with OpenSSL; run the command once for each setting:
+
+```sh
+openssl rand -hex 32
+```
+
+Put the first output in `ACCURATE_ENCRYPTION_KEY` and the second in `JWT_SECRET` in `.env`. Each output is 64 hexadecimal characters. The encryption key must remain stable: losing or changing it without re-encrypting the stored credentials makes those Accurate credentials inaccessible and prevents the server from opening that account data. Configure a stable `JWT_SECRET` in production as well; leaving it empty generates a new value at startup and invalidates existing login sessions after a restart. Never reuse the same value for both settings or commit either value to source control.
 
 ## Local Development
 

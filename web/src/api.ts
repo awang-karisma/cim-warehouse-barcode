@@ -4,7 +4,7 @@ import type {
   Role,
   RolesResponse,
   PermissionsResponse,
-  AccurateStatus,
+	AccurateAccount,
   AccurateDatabase,
   AccurateSearchItemsResult,
   AccurateSourceInfo,
@@ -134,53 +134,65 @@ export const getAllPermissions = () =>
   apiFetch<{ permissions: string[] }>('/api/v1/admin/permissions');
 
 // Accurate Online Integration Endpoints
-export const getAccurateStatus = () =>
-  apiFetch<AccurateStatus>('/api/v1/accurate/status');
+export const getAccurateStatus = (accountId?: number) =>
+  apiFetch<AccurateStatus>(`/api/v1/accurate/status${accountId ? `?accountId=${accountId}` : ''}`);
 
-export const accurateLogin = (payload: { challengeId?: string; otp?: string } = {}) =>
-  apiFetch<{ status: string; challengeId?: string }>('/api/v1/accurate/login', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
+export const getAccurateAccounts = () => apiFetch<AccurateAccount[]>('/api/v1/accurate/accounts');
+
+export const createAccurateAccount = (payload: {
+  name: string; provider: 'web' | 'official'; enabled: boolean; email: string;
+  password?: string; api_token?: string; signature_secret?: string;
+}) => apiFetch<AccurateAccount>('/api/v1/accurate/accounts', {
+  method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+});
+
+export const updateAccurateAccount = (accountId: number, payload: {
+  name: string; enabled: boolean; email: string; password?: string; api_token?: string;
+  signature_secret?: string; clear_signature_secret?: boolean;
+}) => apiFetch<AccurateAccount>(`/api/v1/accurate/accounts/${accountId}`, {
+  method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
+});
+
+export const deleteAccurateAccount = (accountId: number) =>
+  apiFetch<{ success: boolean }>(`/api/v1/accurate/accounts/${accountId}`, { method: 'DELETE' });
+
+export const activateAccurateAccount = (accountId: number) =>
+  apiFetch<AccurateAccount>(`/api/v1/accurate/accounts/${accountId}/activate`, { method: 'POST' });
+
+export const accurateLogin = (payload: { challengeId?: string; otp?: string } = {}, accountId?: number) =>
+  apiFetch<{ status: string; challengeId?: string }>(`/api/v1/accurate/login${accountId ? `?accountId=${accountId}` : ''}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
 
-export const accurateLogout = () =>
-  apiFetch<{ success: boolean }>('/api/v1/accurate/logout', {
-    method: 'POST',
+export const accurateLogout = (accountId?: number) =>
+  apiFetch<{ success: boolean }>(`/api/v1/accurate/logout${accountId ? `?accountId=${accountId}` : ''}`, { method: 'POST' });
+
+export const getAccurateDatabases = (accountId?: number) =>
+  apiFetch<AccurateDatabase[]>(`/api/v1/accurate/databases${accountId ? `?accountId=${accountId}` : ''}`);
+
+export const selectAccurateDatabase = (payload: { id?: number; uniqueId?: string }, accountId?: number) =>
+  apiFetch<{ success: boolean; database: AccurateDatabase }>(`/api/v1/accurate/database${accountId ? `?accountId=${accountId}` : ''}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
   });
 
-export const getAccurateDatabases = () =>
-  apiFetch<AccurateDatabase[]>('/api/v1/accurate/databases');
-
-export const selectAccurateDatabase = (payload: { id?: number; uniqueId?: string }) =>
-  apiFetch<{ success: boolean; database: AccurateDatabase }>('/api/v1/accurate/database', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-export const searchAccurateItems = (params?: { q?: string; page?: number; pageSize?: number }) => {
+export const searchAccurateItems = (params?: { q?: string; page?: number; pageSize?: number; accountId?: number }) => {
   const query = qs(params);
   return apiFetch<AccurateSearchItemsResult>(`/api/v1/accurate/items${query ? '?' + query : ''}`);
 };
 
-export const getAccurateSources = () =>
-  apiFetch<AccurateSourceInfo[]>('/api/v1/accurate/sources');
+export const getAccurateSources = (accountId?: number) =>
+  apiFetch<AccurateSourceInfo[]>(`/api/v1/accurate/sources${accountId ? `?accountId=${accountId}` : ''}`);
 
 export const getAccurateSourceDocuments = (
   source: string,
-  params?: { q?: string; from?: string; to?: string; page?: number; pageSize?: number }
+  params?: { q?: string; from?: string; to?: string; page?: number; pageSize?: number; accountId?: number }
 ) => {
   const query = qs(params);
-  return apiFetch<AccurateDocumentsResult>(
-    `/api/v1/accurate/sources/${encodeURIComponent(source)}/documents${query ? '?' + query : ''}`
-  );
+  return apiFetch<AccurateDocumentsResult>(`/api/v1/accurate/sources/${encodeURIComponent(source)}/documents${query ? '?' + query : ''}`);
 };
 
-export const getAccurateSourceDocumentItems = (source: string, id: number | string) =>
-  apiFetch<AccurateNormalizedItem[]>(
-    `/api/v1/accurate/sources/${encodeURIComponent(source)}/documents/${encodeURIComponent(id)}/items`
-  );
+export const getAccurateSourceDocumentItems = (source: string, id: number | string, accountId?: number) =>
+  apiFetch<AccurateNormalizedItem[]>(`/api/v1/accurate/sources/${encodeURIComponent(source)}/documents/${encodeURIComponent(id)}/items${accountId ? `?accountId=${accountId}` : ''}`);
 
 // Page Designs CRUD
 export const getPageDesigns = () =>

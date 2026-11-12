@@ -40,6 +40,7 @@ export const App: Component<RouteSectionProps> = (props) => {
   const routeTitle = createMemo(() => {
     const path = location.pathname;
     if (path === ROUTES.root || path.startsWith(ROUTES.barcode)) return t('nav.barcodePrinter');
+    if (path.startsWith(ROUTES.accurate)) return t('nav.accurateAccount');
     if (path.startsWith(ROUTES.users)) return t('nav.userManagement');
     if (path.startsWith(ROUTES.roles)) return t('nav.roleManagement');
     if (path.startsWith(ROUTES.rbacTemplate)) return t('nav.rbacTemplate');

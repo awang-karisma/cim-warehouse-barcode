@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/accounts"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/model"
 	_ "modernc.org/sqlite"
 )
@@ -25,6 +25,7 @@ var ErrSystemRole = errors.New("cannot modify or delete system role")
 
 // ErrInvalidPermission is returned when an unrecognized permission string is provided.
 var ErrInvalidPermission = errors.New("invalid permission")
+
 // TableStat represents table row count metrics.
 type TableStat struct {
 	RowCount int `json:"row_count"`
@@ -32,12 +33,12 @@ type TableStat struct {
 
 // Storage provides SQLite persistence for barcode layouts, user accounts, and Accurate session state.
 type Storage struct {
-	db *sql.DB
+	db        *sql.DB
+	secretBox *accounts.SecretBox
 }
 
-// New opens a SQLite database at dbPath with WAL mode and busy timeout pragmas,
-// and automatically migrates the required schema.
-func New(dbPath string) (*Storage, error) {
+// New opens SQLite and configures account-secret encryption when a key is supplied.
+func New(dbPath string, encryptionKey ...string) (*Storage, error) {
 	dsn := dbPath
 	if !strings.Contains(dbPath, "_pragma=journal_mode") && !strings.Contains(dbPath, "_pragma=busy_timeout") {
 		sep := "?"
@@ -58,11 +59,23 @@ func New(dbPath string) (*Storage, error) {
 	}
 
 	s := &Storage{db: db}
+	if len(encryptionKey) > 0 && encryptionKey[0] != "" {
+		box, err := accounts.NewSecretBox(encryptionKey[0])
+		if err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("invalid Accurate encryption key")
+		}
+		s.secretBox = box
+	}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("failed to migrate tables: %w", err)
 	}
 
+	if err := s.verifyAccurateEncryption(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -102,8 +115,25 @@ func (s *Storage) migrate() error {
 		tenant           TEXT NOT NULL DEFAULT '',
 		official_session TEXT NOT NULL DEFAULT ''
 	);
-	INSERT OR IGNORE INTO accurate_session (id) VALUES (1);
 
+	CREATE TABLE IF NOT EXISTS accurate_accounts (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+		provider TEXT NOT NULL DEFAULT 'web',
+		enabled INTEGER NOT NULL DEFAULT 1,
+		email TEXT NOT NULL DEFAULT '',
+		password_encrypted TEXT NOT NULL DEFAULT '',
+		api_token_encrypted TEXT NOT NULL DEFAULT '',
+		signature_secret_encrypted TEXT NOT NULL DEFAULT '',
+		device_id TEXT NOT NULL DEFAULT '',
+		cookies TEXT NOT NULL DEFAULT '[]',
+		tenant TEXT NOT NULL DEFAULT '',
+		official_session TEXT NOT NULL DEFAULT '',
+		is_default INTEGER NOT NULL DEFAULT 0,
+		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
+		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
+	);
+	CREATE UNIQUE INDEX IF NOT EXISTS idx_accurate_accounts_default ON accurate_accounts(is_default) WHERE is_default = 1;
 	CREATE TABLE IF NOT EXISTS page_designs (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		name TEXT NOT NULL,
@@ -147,17 +177,15 @@ func (s *Storage) migrate() error {
 		permission TEXT NOT NULL,
 		PRIMARY KEY (role_id, permission)
 	);
+	CREATE TABLE IF NOT EXISTS migration_markers (name TEXT PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT (datetime('now')));
 	`
 	if _, err := s.db.Exec(schema); err != nil {
 		return err
 	}
 
-	_, _ = s.db.Exec(`ALTER TABLE accurate_session ADD COLUMN provider TEXT NOT NULL DEFAULT 'web';`)
-	_, _ = s.db.Exec(`ALTER TABLE accurate_session ADD COLUMN official_session TEXT NOT NULL DEFAULT '';`)
 	_, _ = s.db.Exec(`ALTER TABLE page_designs ADD COLUMN label_layout TEXT DEFAULT NULL;`)
 	_, _ = s.db.Exec(`ALTER TABLE page_designs ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}';`)
 	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'id';`)
-
 
 	// Seed system roles (idempotent)
 	systemRoles := []struct{ name, desc string }{
@@ -231,13 +259,16 @@ func (s *Storage) migrate() error {
 			}
 		}
 	}
+	if err := s.grantAccurateAccountPermissionsOnce(); err != nil {
+		return err
+	}
 	return nil
 }
 
-// GetTableStats returns row counts for users, accurate_session, page_designs, label_layout_presets, roles, and role_permissions tables.
+// GetTableStats returns row counts for users, accurate_accounts, page_designs, label_layout_presets, roles, and role_permissions tables.
 func (s *Storage) GetTableStats(ctx context.Context) (map[string]TableStat, error) {
 	stats := make(map[string]TableStat)
-	tables := []string{"users", "accurate_session", "page_designs", "label_layout_presets", "roles", "role_permissions"}
+	tables := []string{"users", "accurate_accounts", "page_designs", "label_layout_presets", "roles", "role_permissions"}
 	for _, tbl := range tables {
 		var count int
 		query := fmt.Sprintf("SELECT COUNT(*) FROM %s", tbl)
@@ -396,87 +427,6 @@ func (s *Storage) DeleteUser(ctx context.Context, email string) error {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
 	return nil
-}
-
-// SaveAccurateSession serializes session state for either provider to JSON and updates the singleton row.
-func (s *Storage) SaveAccurateSession(providerID, email, deviceID string, jar *accurate.MemoryJar, tenant *accurate.TenantSession, official *accurate.OfficialSessionState) error {
-	cookiesJSON := "[]"
-	if jar != nil {
-		allCookies := jar.AllCookies()
-		data, err := json.Marshal(allCookies)
-		if err != nil {
-			return err
-		}
-		cookiesJSON = string(data)
-	}
-
-	tenantJSON := ""
-	if tenant != nil {
-		data, err := json.Marshal(tenant)
-		if err != nil {
-			return err
-		}
-		tenantJSON = string(data)
-	}
-
-	officialJSON := ""
-	if official != nil {
-		data, err := json.Marshal(official)
-		if err != nil {
-			return err
-		}
-		officialJSON = string(data)
-	}
-
-	if providerID == "" {
-		providerID = "web"
-	}
-
-	_, err := s.db.Exec(
-		`UPDATE accurate_session SET provider = ?, email = ?, device_id = ?, cookies = ?, tenant = ?, official_session = ? WHERE id = 1`,
-		providerID, email, deviceID, cookiesJSON, tenantJSON, officialJSON,
-	)
-	return err
-}
-
-// LoadAccurateSession reads the singleton session row and deserializes provider ID and connection state.
-func (s *Storage) LoadAccurateSession() (providerID, email, deviceID string, cookies []*accurate.Cookie, tenant *accurate.TenantSession, official *accurate.OfficialSessionState, err error) {
-	var cookiesJSON, tenantJSON, officialJSON string
-	row := s.db.QueryRow(`SELECT provider, email, device_id, cookies, tenant, official_session FROM accurate_session WHERE id = 1`)
-	if err := row.Scan(&providerID, &email, &deviceID, &cookiesJSON, &tenantJSON, &officialJSON); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return "web", "", "", nil, nil, nil, nil
-		}
-		return "web", "", "", nil, nil, nil, err
-	}
-
-	if cookiesJSON != "" && cookiesJSON != "[]" {
-		if err := json.Unmarshal([]byte(cookiesJSON), &cookies); err != nil {
-			return providerID, email, deviceID, nil, nil, nil, fmt.Errorf("failed to decode cookies: %w", err)
-		}
-	}
-
-	if tenantJSON != "" {
-		tenant = &accurate.TenantSession{}
-		if err := json.Unmarshal([]byte(tenantJSON), tenant); err != nil {
-			return providerID, email, deviceID, nil, nil, nil, fmt.Errorf("failed to decode tenant session: %w", err)
-		}
-	}
-
-	if officialJSON != "" {
-		official = &accurate.OfficialSessionState{}
-		if err := json.Unmarshal([]byte(officialJSON), official); err != nil {
-			return providerID, email, deviceID, nil, nil, nil, fmt.Errorf("failed to decode official session: %w", err)
-		}
-	}
-
-	return providerID, email, deviceID, cookies, tenant, official, nil
-}
-
-// ClearAccurateSession clears all stored session data while preserving the singleton row.
-func (s *Storage) ClearAccurateSession() error {
-	_, err := s.db.Exec(`UPDATE accurate_session SET email = '', device_id = '', cookies = '[]', tenant = '', official_session = '' WHERE id = 1`)
-	return err
 }
 
 // GetLabelLayoutPresets lists reusable label element layouts by name.
@@ -1163,4 +1113,33 @@ func (s *Storage) GetPermissionsByRoleName(ctx context.Context, roleName string)
 		perms = []string{}
 	}
 	return perms, nil
+}
+
+func (s *Storage) grantAccurateAccountPermissionsOnce() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var applied int
+	err = tx.QueryRow(`SELECT COUNT(*) FROM migration_markers WHERE name='accurate_account_permissions_v1'`).Scan(&applied)
+	if err != nil {
+		return err
+	}
+	if applied != 0 {
+		return nil
+	}
+	var adminID int64
+	if err := tx.QueryRow(`SELECT id FROM roles WHERE name='admin' COLLATE NOCASE`).Scan(&adminID); err != nil {
+		return err
+	}
+	for _, p := range []model.Permission{model.PermAccurateAccountRead, model.PermAccurateAccountCreate, model.PermAccurateAccountUpdate, model.PermAccurateAccountDelete} {
+		if _, err := tx.Exec(`INSERT OR IGNORE INTO role_permissions(role_id,permission) VALUES(?,?)`, adminID, string(p)); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.Exec(`INSERT INTO migration_markers(name) VALUES('accurate_account_permissions_v1')`); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

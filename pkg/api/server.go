@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/accounts"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/adapter"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/session"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/auth"
@@ -83,25 +84,26 @@ func (s *Server) resolvePermissions(ctx context.Context, roleName string) ([]str
 
 // Config holds dependencies for creating an API Server.
 type Config struct {
-	Store            *storage.Storage
-	AppConfig        *config.Config
-	PermCache        rbac.PermissionCache
-	AccurateProvider accurate.Provider
-	AccurateSession  *session.Manager
-	AccurateRegistry *adapter.Registry
+	Store        *storage.Storage
+	AppConfig    *config.Config
+	PermCache    rbac.PermissionCache
+	AccuratePool *accounts.Pool
 }
 
 // Server wraps the Fiber v3 HTTP application and Huma v2 API.
 type Server struct {
-	app              *fiber.App
-	humaAPI          huma.API
-	store            *storage.Storage
-	appConfig        *config.Config
-	permCache        rbac.PermissionCache
-	accurateProvider accurate.Provider
-	accurateSession  *session.Manager
-	accurateRegistry *adapter.Registry
-	startTime        time.Time
+	app                    *fiber.App
+	humaAPI                huma.API
+	store                  *storage.Storage
+	appConfig              *config.Config
+	permCache              rbac.PermissionCache
+	accurateProvider       accurate.Provider
+	accurateSession        *session.Manager
+	accurateRegistry       *adapter.Registry
+	accountPool            *accounts.Pool
+	accountEmail           string
+	startTime              time.Time
+	accountOperationUnlock func()
 }
 
 // New creates and initializes a new Fiber v3 API Server with middlewares and routes.
@@ -146,15 +148,16 @@ func New(cfg Config) *Server {
 	}
 
 	s := &Server{
-		app:              app,
-		humaAPI:          humaAPI,
-		store:            cfg.Store,
-		appConfig:        cfg.AppConfig,
-		permCache:        permCache,
-		startTime:        time.Now(),
-		accurateProvider: cfg.AccurateProvider,
-		accurateSession:  cfg.AccurateSession,
-		accurateRegistry: cfg.AccurateRegistry,
+		app:         app,
+		humaAPI:     humaAPI,
+		store:       cfg.Store,
+		appConfig:   cfg.AppConfig,
+		permCache:   permCache,
+		startTime:   time.Now(),
+		accountPool: cfg.AccuratePool,
+	}
+	if s.accountPool == nil {
+		s.accountPool = accounts.NewPool(s.store, nil)
 	}
 	app.Use(s.authMiddleware)
 	humaAPI.UseMiddleware(s.humaAuthMiddleware)
@@ -371,6 +374,13 @@ func (s *Server) registerOperations() {
 		Tags:        []string{"barcode"},
 		Metadata:    map[string]any{"permission": string(model.PermPresetDelete)},
 	}, s.handleDeleteLabelLayoutPreset)
+
+	// Accurate account credential management uses a separate RBAC resource.
+	huma.Register(s.humaAPI, huma.Operation{OperationID: "list-accurate-accounts", Method: http.MethodGet, Path: "/api/v1/accurate/accounts", Summary: "List Accurate accounts", Tags: []string{"accurate"}, Metadata: map[string]any{"permission": string(model.PermAccurateAccountRead)}}, s.handleListAccurateAccounts)
+	huma.Register(s.humaAPI, huma.Operation{OperationID: "create-accurate-account", Method: http.MethodPost, Path: "/api/v1/accurate/accounts", Summary: "Create Accurate account", Tags: []string{"accurate"}, DefaultStatus: http.StatusCreated, Metadata: map[string]any{"permission": string(model.PermAccurateAccountCreate)}}, s.handleCreateAccurateAccount)
+	huma.Register(s.humaAPI, huma.Operation{OperationID: "update-accurate-account", Method: http.MethodPut, Path: "/api/v1/accurate/accounts/{accountId}", Summary: "Update Accurate account", Tags: []string{"accurate"}, Metadata: map[string]any{"permission": string(model.PermAccurateAccountUpdate)}}, s.handleUpdateAccurateAccount)
+	huma.Register(s.humaAPI, huma.Operation{OperationID: "delete-accurate-account", Method: http.MethodDelete, Path: "/api/v1/accurate/accounts/{accountId}", Summary: "Delete Accurate account", Tags: []string{"accurate"}, Metadata: map[string]any{"permission": string(model.PermAccurateAccountDelete)}}, s.handleDeleteAccurateAccount)
+	huma.Register(s.humaAPI, huma.Operation{OperationID: "activate-accurate-account", Method: http.MethodPost, Path: "/api/v1/accurate/accounts/{accountId}/activate", Summary: "Activate Accurate account", Tags: []string{"accurate"}, Metadata: map[string]any{"permission": string(model.PermAccurateAccountUpdate)}}, s.handleActivateAccurateAccount)
 
 	// Accurate Online Integration Endpoints
 	huma.Register(s.humaAPI, huma.Operation{

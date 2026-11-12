@@ -594,7 +594,7 @@ export const RoleManagement: Component = () => {
                             return (
                               <TableRow class="hover:bg-muted/30">
                                 <TableCell class="font-medium text-xs text-foreground py-2.5">
-                                  <div>{resVal.label}</div>
+									<div>{resKey === 'accurate_account' ? t('roleManagement.accurateAccountResource') : resVal.label}</div>
                                   <div class="text-[10px] text-muted-foreground font-mono">{resKey}</div>
                                 </TableCell>
                                 <For each={ALL_VERBS}>

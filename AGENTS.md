@@ -13,8 +13,8 @@ Request flow: SolidJS SPA → Fiber v3 engine (`pkg/api/server.go`) → either r
 Key patterns:
 - **Dual HTTP layer**: Huma v2 generates OpenAPI 3.1 + Scalar UI at `/docs`, `/openapi`; raw Fiber handlers cover auth cookie flows and admin user CRUD. Central `fiber.Config.ErrorHandler` emits `{"error": ...}`.
 - **Auth**: `warehouse_session` cookie (HS256 JWT, 24h). Middleware enforces per-operation `minRole` via a role hierarchy. **Empty `GOOGLE_CLIENT_ID` = auth bypass mode** (backend skips checks; frontend mocks a `superadmin` session).
-- **Accurate integration**: `Provider` interface (`pkg/accurate/provider.go`) with two implementations — `provider/web` (SAML SSO scraping, TOTP MFA, DSI tenant tokens) and `provider/official` (Bearer token, HMAC-SHA256 signatures). `session.Manager` (sync.RWMutex) keeps in-memory state persisted to the `accurate_session` singleton table; `adapter.Registry` resolves 6 `SourceAdapter` document types.
-- **Provider selection & DI**: everything constructed in `cmd/barcode-server/main.go` and injected via constructors (`storage.New`, `session.NewManager`, `api.New(api.Config{...})`). No globals. Official provider uses functional options (`WithBaseURL`, `WithHTTPClient`, `WithSignatureSecret`, `WithNow`, `WithDisabledSource`) — also the test seam.
+- **Accurate integration**: `Provider` supports isolated web and official accounts via `accounts.Pool`; each `session.Manager` and `adapter.Registry` is account-scoped. Credentials and session secrets in `accurate_accounts` are AES-256-GCM encrypted with `ACCURATE_ENCRYPTION_KEY`. The legacy `accurate_session` table is retained but unused.
+- **Provider selection & DI**: `cmd/barcode-server/main.go` injects the storage-backed account pool through `api.Config`. Official provider functional options (`WithBaseURL`, `WithHTTPClient`, `WithSignatureSecret`, `WithNow`, `WithDisabledSource`) remain test seams.
 - **Frontend embedding**: build tag `embed_frontend` (`cmd/barcode-server/embed.go` / `embed_stub.go`). Without it, the server serves `web/dist` from disk if present.
 - **Migrations**: no CLI — `storage.New()` runs `CREATE TABLE IF NOT EXISTS` + non-destructive `ALTER TABLE` on startup (`pkg/storage/storage.go`). SQLite runs in WAL mode with 5000ms busy timeout via DSN pragmas.
 
@@ -62,12 +62,12 @@ No lint/vet/fmt Makefile targets and no `.golangci.yml`; use `go vet ./...` / `g
 - **JSON tags**: `snake_case` for persisted models (`paper_width_mm`), `camelCase` for Accurate-upstream payload models (`itemId`), Huma tags `path:"id" query:"q" default:"1"`.
 - **Enums**: type-prefixed constants (`RoleSuperadmin`, `ProviderWeb`, `SourceReceiveItem`) defined in `pkg/model/vocabulary.go` and `pkg/accurate/vocabulary.go`.
 - **Concurrency**: shared state guarded by `sync.RWMutex` (session manager, adapter registry, cookie jar, challenge store). Auth claims propagate through `context.Context` (`authClaimsKey`), read via `claimsFromContext`.
-- **Config**: env-only (`.env` via godotenv + Viper `AutomaticEnv`). See `.env.example`. `JWT_SECRET` auto-generates when empty; `ACCURATE_PROVIDER=web` requires email/password, `official` requires API token.
-- **DB schema**: plural `snake_case` tables; singleton tables enforce `id INTEGER PRIMARY KEY CHECK (id = 1)`.
+- **Config**: env-only (`.env` via godotenv + Viper `AutomaticEnv`). See `.env.example`. `JWT_SECRET` auto-generates when empty; `ACCURATE_ENCRYPTION_KEY` is a stable 32-byte hex key required for encrypted stored credentials/session data.
+- **DB schema**: plural `snake_case` tables; singleton system tables enforce `id INTEGER PRIMARY KEY CHECK (id = 1)`. Accurate sessions are persisted per account; legacy `accurate_session` is unused.
 
 ## Important Files
 
-- `cmd/barcode-server/main.go` — bootstrap: config → storage → provider → session/adapter → API server; SIGINT/SIGTERM graceful shutdown
+- `cmd/barcode-server/main.go` — bootstrap: config → encrypted SQLite storage → account provider pool → API server; SIGINT/SIGTERM graceful shutdown
 - `pkg/api/server.go` — middleware, role enforcement, route wiring, static SPA serving
 - `pkg/accurate/provider.go` — `Provider` interface, `FlexFloat` (tolerant numeric unmarshal), normalized domain types
 - `pkg/accurate/session/session.go` — session lifecycle + SQLite persistence

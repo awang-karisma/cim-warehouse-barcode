@@ -155,7 +155,7 @@ func (p *Provider) Login(ctx context.Context, challengeID, otp string) (accurate
 	defer p.mu.RUnlock()
 
 	if p.token == "" {
-		return accurate.LoginResult{}, fmt.Errorf("missing ACCURATE_API_TOKEN")
+		return accurate.LoginResult{}, fmt.Errorf("missing API token")
 	}
 	return accurate.LoginResult{Status: accurate.LoginSuccess}, nil
 }

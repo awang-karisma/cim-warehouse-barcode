@@ -54,6 +54,23 @@ export interface AccurateStatus {
   enabled: boolean;
   provider?: string;
   connected: boolean;
+	accountId?: number;
+	accountName?: string;
+	 database?: AccurateDatabase;
+}
+export interface AccurateAccount {
+  id: number;
+  name: string;
+  provider: 'web' | 'official';
+  enabled: boolean;
+  email: string;
+  has_password: boolean;
+  has_api_token: boolean;
+  has_signature_secret: boolean;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+  connected: boolean;
   database?: AccurateDatabase;
 }
 

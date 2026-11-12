@@ -12,11 +12,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate"
-	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/adapter"
-	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/provider/official"
-	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/provider/web"
-	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/session"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/accounts"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/api"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/config"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/rbac"
@@ -38,45 +34,19 @@ func main() {
 		}
 	}
 
-	store, err := storage.New(cfg.DBPath)
+	store, err := storage.New(cfg.DBPath, cfg.AccurateEncryptionKey)
 	if err != nil {
 		log.Fatalf("failed to initialize database at %s: %v", cfg.DBPath, err)
 	}
 	defer store.Close()
 
-	// 3. Initialize Accurate integration (if configured)
-	var accProv accurate.Provider
-	var accSession *session.Manager
-	var accRegistry *adapter.Registry
-
-	switch accurate.ProviderKind(cfg.AccurateProvider) {
-	case accurate.ProviderWeb:
-		accProv = web.New(cfg.AccurateEmail, cfg.AccuratePassword, nil)
-		accSession = session.NewManager(store, accProv)
-		accRegistry = adapter.NewRegistry(accProv)
-		log.Printf("Accurate integration initialized with provider: web (%s)", cfg.AccurateEmail)
-	case accurate.ProviderOfficial:
-		var opts []official.Option
-		if cfg.AccurateAPISignatureSecret != "" {
-			opts = append(opts, official.WithSignatureSecret(cfg.AccurateAPISignatureSecret))
-		}
-		accProv = official.New(cfg.AccurateAPIToken, opts...)
-		accSession = session.NewManager(store, accProv)
-		accRegistry = adapter.NewRegistry(accProv)
-		log.Println("Accurate integration initialized with provider: official")
-	default:
-		log.Println("Accurate integration is disabled (ACCURATE_PROVIDER is unset)")
-	}
-
 	// 4. Start Fiber v3 HTTP server
 	permCache := rbac.NewMemoryCache(cfg.RBACCacheTTL)
 	srv := api.New(api.Config{
-		Store:            store,
-		AppConfig:        cfg,
-		PermCache:        permCache,
-		AccurateProvider: accProv,
-		AccurateSession:  accSession,
-		AccurateRegistry: accRegistry,
+		Store:        store,
+		AppConfig:    cfg,
+		PermCache:    permCache,
+		AccuratePool: accounts.NewPool(store, nil),
 	})
 	if embeddedFS != nil {
 		log.Println("Serving embedded SolidJS frontend")

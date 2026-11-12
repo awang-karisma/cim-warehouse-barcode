@@ -26,6 +26,11 @@ const (
 	PermAccurateUpdate Permission = "accurate:update"
 	PermAccurateDelete Permission = "accurate:delete"
 
+	// Stored Accurate credential management is separate from daily session use.
+	PermAccurateAccountRead   Permission = "accurate_account:read"
+	PermAccurateAccountCreate Permission = "accurate_account:create"
+	PermAccurateAccountUpdate Permission = "accurate_account:update"
+	PermAccurateAccountDelete Permission = "accurate_account:delete"
 	// User management (admin)
 	PermUserRead   Permission = "user:read"
 	PermUserCreate Permission = "user:create" // approve guest
@@ -47,6 +52,7 @@ var AllPermissions = []Permission{
 	PermDesignRead, PermDesignCreate, PermDesignUpdate, PermDesignDelete,
 	PermPresetRead, PermPresetCreate, PermPresetUpdate, PermPresetDelete,
 	PermAccurateRead, PermAccurateCreate, PermAccurateUpdate, PermAccurateDelete,
+	PermAccurateAccountRead, PermAccurateAccountCreate, PermAccurateAccountUpdate, PermAccurateAccountDelete,
 	PermUserRead, PermUserCreate, PermUserUpdate, PermUserDelete,
 	PermRoleRead, PermRoleCreate, PermRoleUpdate, PermRoleDelete,
 	PermSystemRead,

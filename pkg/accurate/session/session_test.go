@@ -2,6 +2,7 @@ package session_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,14 +17,15 @@ func TestSessionManager_Persistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "session_mgr_test.db")
 
-	st, err := storage.New(dbPath)
+	st, err := storage.New(dbPath, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 	if err != nil {
 		t.Fatalf("storage.New() failed: %v", err)
 	}
 	defer st.Close()
 
 	// Create manager with store
-	mgr := session.NewManager(st)
+	_, _ = st.CreateAccurateAccount(t.Context(), storage.AccurateAccount{Name: "test", Provider: "web", Enabled: true})
+	mgr := session.NewManager(st, 1, nil)
 
 	// Set email
 	testEmail := "persisted@example.com"
@@ -52,6 +54,15 @@ func TestSessionManager_Persistence(t *testing.T) {
 		},
 	}
 	mgr.SetTenantSession(tenant)
+	var storedCookies, storedTenant string
+	if err := st.DB().QueryRow(`SELECT cookies,tenant FROM accurate_accounts WHERE id=1`).Scan(&storedCookies, &storedTenant); err != nil {
+		t.Fatal(err)
+	}
+	for _, secret := range []string{"secret-token-val", "test-dsi-token"} {
+		if strings.Contains(storedCookies, secret) || strings.Contains(storedTenant, secret) {
+			t.Fatalf("plaintext session secret persisted: %s", secret)
+		}
+	}
 
 	// Verify in-memory status
 	status := mgr.Status()
@@ -60,7 +71,7 @@ func TestSessionManager_Persistence(t *testing.T) {
 	}
 
 	// Now simulate restart: create a new Manager pointing to the same store
-	mgr2 := session.NewManager(st)
+	mgr2 := session.NewManager(st, 1, nil)
 
 	if mgr2.Email() != testEmail {
 		t.Errorf("expected email %q, got %q", testEmail, mgr2.Email())
@@ -89,9 +100,9 @@ func TestSessionManager_Persistence(t *testing.T) {
 	}
 
 	// Simulate restart after logout
-	mgr3 := session.NewManager(st)
-	if mgr3.Email() != "" {
-		t.Errorf("expected empty email after logout restart, got %q", mgr3.Email())
+	mgr3 := session.NewManager(st, 1, nil)
+	if mgr3.Email() != testEmail {
+		t.Errorf("expected account email %q after logout restart, got %q", testEmail, mgr3.Email())
 	}
 	if len(mgr3.Client().Jar().AllCookies()) != 0 {
 		t.Errorf("expected 0 cookies after logout restart, got %d", len(mgr3.Client().Jar().AllCookies()))
@@ -105,13 +116,14 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "session_mgr_invalidate_test.db")
 
-	st, err := storage.New(dbPath)
+	st, err := storage.New(dbPath, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 	if err != nil {
 		t.Fatalf("storage.New() failed: %v", err)
 	}
 	defer st.Close()
 
-	mgr := session.NewManager(st)
+	_, _ = st.CreateAccurateAccount(t.Context(), storage.AccurateAccount{Name: "test", Provider: "web", Enabled: true})
+	mgr := session.NewManager(st, 1, nil)
 	mgr.SetEmail("active@example.com")
 
 	activeTenant := &accurate.TenantSession{
@@ -159,20 +171,20 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	if s := mgr.Status(); s.Connected || s.Database != nil {
 		t.Fatalf("expected disconnected status after invalidation, got: %+v", s)
 	}
-	if mgr.Email() != "" {
-		t.Fatalf("expected empty email after invalidation, got: %q", mgr.Email())
+	if mgr.Email() != "active@example.com" {
+		t.Fatalf("expected account email to remain after invalidation, got: %q", mgr.Email())
 	}
 	if _, ok := mgr.TenantSession(); ok {
 		t.Fatal("expected no tenant session after invalidation")
 	}
 
 	// Verify persistent store was cleared
-	mgrRestart := session.NewManager(st)
+	mgrRestart := session.NewManager(st, 1, nil)
 	if mgrRestart.Status().Connected {
 		t.Fatal("expected store to be cleared after invalidation on restart")
 	}
-	if mgrRestart.Email() != "" {
-		t.Fatalf("expected empty email on restart, got: %q", mgrRestart.Email())
+	if mgrRestart.Email() != "active@example.com" {
+		t.Fatalf("expected account email on restart, got: %q", mgrRestart.Email())
 	}
 }
 
@@ -180,14 +192,15 @@ func TestSessionManager_OfficialPersistenceWithoutSessionID(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "session_mgr_official_test.db")
 
-	st, err := storage.New(dbPath)
+	st, err := storage.New(dbPath, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
 	if err != nil {
 		t.Fatalf("storage.New() failed: %v", err)
 	}
 	defer st.Close()
 
 	offProv := official.New("test-token")
-	mgr := session.NewManager(st, offProv)
+	_, _ = st.CreateAccurateAccount(t.Context(), storage.AccurateAccount{Name: "test", Provider: "official", Enabled: true})
+	mgr := session.NewManager(st, 1, offProv)
 
 	// In API Token mode, Session is empty, but Host and Database are populated
 	state := &accurate.OfficialSessionState{
@@ -210,7 +223,7 @@ func TestSessionManager_OfficialPersistenceWithoutSessionID(t *testing.T) {
 
 	// Simulate restart
 	offProv2 := official.New("test-token")
-	mgr2 := session.NewManager(st, offProv2)
+	mgr2 := session.NewManager(st, 1, offProv2)
 
 	s2 := mgr2.Status()
 	if !s2.Connected || s2.Database == nil || s2.Database.ID != 3026472 {
@@ -231,7 +244,7 @@ func TestSessionManager_LogoutReplacesWebProviderClient(t *testing.T) {
 		Expires: time.Now().Add(time.Hour),
 	}})
 	provider := web.New("user@example.com", "password", client)
-	manager := session.NewManager(nil, provider)
+	manager := session.NewManager(nil, 0, provider)
 
 	if manager.Client() != provider.Client() {
 		t.Fatal("manager and provider should initially share the web client")

@@ -11,9 +11,9 @@ import (
 
 // SessionStore defines the interface for persisting Accurate session state.
 type SessionStore interface {
-	SaveAccurateSession(providerID, email, deviceID string, jar *accurate.MemoryJar, tenant *accurate.TenantSession, official *accurate.OfficialSessionState) error
-	LoadAccurateSession() (providerID, email, deviceID string, cookies []*accurate.Cookie, tenant *accurate.TenantSession, official *accurate.OfficialSessionState, err error)
-	ClearAccurateSession() error
+	SaveAccurateSession(accountID int64, providerID, email, deviceID string, jar *accurate.MemoryJar, tenant *accurate.TenantSession, official *accurate.OfficialSessionState) error
+	LoadAccurateSession(accountID int64) (providerID, email, deviceID string, cookies []*accurate.Cookie, tenant *accurate.TenantSession, official *accurate.OfficialSessionState, err error)
+	ClearAccurateSession(accountID int64) error
 }
 
 // Status represents the current connection and database session status.
@@ -27,6 +27,7 @@ type Status struct {
 type Manager struct {
 	mu              sync.RWMutex
 	store           SessionStore
+	accountID       int64
 	prov            accurate.Provider
 	client          *accurate.Client
 	tenantSession   *accurate.TenantSession
@@ -34,17 +35,10 @@ type Manager struct {
 	email           string
 }
 
-// NewManager creates a Manager with optional persistence and configured Provider.
-func NewManager(st SessionStore, prov ...accurate.Provider) *Manager {
-	var p accurate.Provider
-	if len(prov) > 0 && prov[0] != nil {
-		p = prov[0]
-	}
-
-	m := &Manager{
-		store: st,
-		prov:  p,
-	}
+// NewManager creates an account-scoped Manager with persisted provider state.
+func NewManager(st SessionStore, accountID int64, prov accurate.Provider) *Manager {
+	var p accurate.Provider = prov
+	m := &Manager{store: st, accountID: accountID, prov: p}
 
 	if wp, ok := p.(*web.Provider); ok {
 		m.client = wp.Client()
@@ -53,7 +47,7 @@ func NewManager(st SessionStore, prov ...accurate.Provider) *Manager {
 	}
 
 	if st != nil {
-		providerID, email, deviceID, cookies, tenant, officialState, err := st.LoadAccurateSession()
+		providerID, email, deviceID, cookies, tenant, officialState, err := st.LoadAccurateSession(accountID)
 		if err != nil {
 			log.Printf("session: failed to load session from store: %v", err)
 		} else {
@@ -120,11 +114,16 @@ func (m *Manager) SetClient(c *accurate.Client) {
 	m.persist()
 }
 
-func (m *Manager) SetEmail(email string) {
+func (m *Manager) SetEmail(email string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	old := m.email
 	m.email = email
-	m.persist()
+	if err := m.persist(); err != nil {
+		m.email = old
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) Email() string {
@@ -133,14 +132,22 @@ func (m *Manager) Email() string {
 	return m.email
 }
 
-func (m *Manager) SetTenantSession(s *accurate.TenantSession) {
+func (m *Manager) SetTenantSession(s *accurate.TenantSession) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	old := m.tenantSession
 	m.tenantSession = s
 	if wp, ok := m.prov.(*web.Provider); ok {
 		wp.SetTenantSession(s)
 	}
-	m.persist()
+	if err := m.persist(); err != nil {
+		m.tenantSession = old
+		if wp, ok := m.prov.(*web.Provider); ok {
+			wp.SetTenantSession(old)
+		}
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) TenantSession() (*accurate.TenantSession, bool) {
@@ -152,14 +159,25 @@ func (m *Manager) TenantSession() (*accurate.TenantSession, bool) {
 	return m.tenantSession, true
 }
 
-func (m *Manager) SetOfficialSession(s *accurate.OfficialSessionState) {
+func (m *Manager) SetOfficialSession(s *accurate.OfficialSessionState) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	old := m.officialSession
 	m.officialSession = s
 	if op, ok := m.prov.(*official.Provider); ok && s != nil {
 		op.SetSession(s.Host, s.Session, s.Database)
 	}
-	m.persist()
+	if err := m.persist(); err != nil {
+		m.officialSession = old
+		if op, ok := m.prov.(*official.Provider); ok {
+			op.ClearSession()
+			if old != nil {
+				op.SetSession(old.Host, old.Session, old.Database)
+			}
+		}
+		return err
+	}
+	return nil
 }
 
 func (m *Manager) OfficialSession() (*accurate.OfficialSessionState, bool) {
@@ -216,10 +234,9 @@ func (m *Manager) Status() Status {
 	}
 }
 
-func (m *Manager) resetLocked() {
+func (m *Manager) resetLocked() error {
 	m.tenantSession = nil
 	m.officialSession = nil
-	m.email = ""
 	webProv, isWeb := m.prov.(*web.Provider)
 	if isWeb {
 		webProv.ClearSession()
@@ -232,22 +249,23 @@ func (m *Manager) resetLocked() {
 		webProv.SetClient(m.client)
 	}
 	if m.store != nil {
-		if err := m.store.ClearAccurateSession(); err != nil {
-			log.Printf("session: failed to clear session in store: %v", err)
-		}
+		return m.store.ClearAccurateSession(m.accountID)
 	}
+	return nil
 }
 
-func (m *Manager) Logout() {
+func (m *Manager) Logout() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.resetLocked()
+	return m.resetLocked()
 }
 
 func (m *Manager) InvalidateSession() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.resetLocked()
+	if err := m.resetLocked(); err != nil {
+		log.Printf("session: failed to clear session in store: %v", err)
+	}
 	return true
 }
 
@@ -257,27 +275,25 @@ func (m *Manager) InvalidateTenantSession(expected *accurate.TenantSession) bool
 	if expected == nil || m.tenantSession != expected {
 		return false
 	}
-	m.resetLocked()
+	if err := m.resetLocked(); err != nil {
+		log.Printf("session: failed to clear session in store: %v", err)
+	}
 	return true
 }
 
-func (m *Manager) persist() {
+func (m *Manager) persist() error {
 	if m.store == nil {
-		return
+		return nil
 	}
 	provID := string(accurate.ProviderWeb)
 	if m.prov != nil {
 		provID = m.prov.ID()
 	}
-
 	var jar *accurate.MemoryJar
 	var deviceID string
 	if m.client != nil {
 		jar = m.client.Jar()
 		deviceID = m.client.DeviceID()
 	}
-
-	if err := m.store.SaveAccurateSession(provID, m.email, deviceID, jar, m.tenantSession, m.officialSession); err != nil {
-		log.Printf("session: failed to persist session: %v", err)
-	}
+	return m.store.SaveAccurateSession(m.accountID, provID, m.email, deviceID, jar, m.tenantSession, m.officialSession)
 }

@@ -22,6 +22,7 @@ export const PERMISSION_RESOURCES = {
   design: { label: 'Page Designs', verbs: ['read', 'create', 'update', 'delete'] },
   preset: { label: 'Label Presets', verbs: ['read', 'create', 'update', 'delete'] },
   accurate: { label: 'Accurate Online', verbs: ['read', 'create', 'update', 'delete'] },
+	accurate_account: { label: 'Accurate Accounts', verbs: ['read', 'create', 'update', 'delete'] },
   user: { label: 'User Management', verbs: ['read', 'create', 'update', 'delete'] },
   role: { label: 'Role Management', verbs: ['read', 'create', 'update', 'delete'] },
   system: { label: 'System', verbs: ['read'] },

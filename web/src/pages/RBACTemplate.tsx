@@ -205,7 +205,7 @@ export const RBACTemplate: Component = () => {
                 <div class="rounded-lg border border-border bg-card p-4 space-y-3 flex flex-col justify-between">
                   <div>
                     <div class="flex items-center justify-between mb-1">
-                      <span class="font-semibold text-sm text-foreground">{resourceInfo.label}</span>
+						<span class="font-semibold text-sm text-foreground">{resourceKey === 'accurate_account' ? t('roleManagement.accurateAccountResource') : resourceInfo.label}</span>
                       <code class="text-[10px] font-mono bg-muted px-1.5 py-0.5 rounded text-muted-foreground">
                         {resourceKey}
                       </code>

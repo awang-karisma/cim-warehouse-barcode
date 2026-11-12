@@ -1,7 +1,7 @@
-import { type Component, createSignal, For, Show } from 'solid-js';
+import { type Component, createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
 import { useI18n } from '~/i18n';
 import * as api from '~/api';
-import { handleSessionInvalidated } from '~/stores/accurateAuth';
+	import { handleSessionInvalidated, refreshStatus, activeStatus } from '~/stores/accurateAuth';
 import { addNormalizedItems } from '~/stores/barcodeItems';
 import type { AccurateInventoryItem, AccurateNormalizedItem, AccuratePagination } from '~/types';
 import {
@@ -35,22 +35,38 @@ export const ItemSearchDrawer: Component<ItemSearchDrawerProps> = (props) => {
   const [isLoading, setIsLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
-  const fetchItems = async (page = 1) => {
-    setIsLoading(true);
-    setError(null);
-    try {
-      const res = await api.searchAccurateItems({ q: query(), page, pageSize: 50 });
-      setItems(res.items);
-      setPagination(res.pagination);
-    } catch (err) {
-      if (err instanceof api.ApiError && err.status === 401) {
-        handleSessionInvalidated(err.message);
-      }
-      setError(err instanceof Error ? err.message : t('barcode.searchItemsFailed'));
-    } finally {
-      setIsLoading(false);
-    }
-  };
+	let requestGeneration = 0;
+	let observedContext = '';
+	createEffect(() => {
+		const context = `${activeStatus().accountId ?? ''}:${activeStatus().database?.id ?? ''}`;
+		if (context !== observedContext) {
+			observedContext = context;
+			requestGeneration++;
+			setItems([]); setSelectedIds(new Set<number>()); setPagination({ page:1,pageCount:1,pageSize:50,rowCount:0 }); setIsLoading(false);
+		}
+	});
+	let wasOpen = false;
+	createEffect(() => { const open=props.isOpen; if(open&&!wasOpen) void refreshStatus(); wasOpen=open; });
+	onMount(() => { const onFocus=()=>void refreshStatus(); window.addEventListener('focus',onFocus); onCleanup(()=>window.removeEventListener('focus',onFocus)); });
+
+	const fetchItems = async (page = 1) => {
+		const accountID = activeStatus().accountId;
+		const databaseID = activeStatus().database?.id;
+		if (!accountID || !databaseID) { setItems([]); setError(t('accurate.noActiveAccount')); return; }
+		const generation = ++requestGeneration;
+		setIsLoading(true);
+		setError(null);
+		try {
+			const res = await api.searchAccurateItems({ q: query(), page, pageSize: 50, accountId: accountID });
+			if (generation !== requestGeneration || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
+			setItems(res.items); setPagination(res.pagination);
+		} catch (err) {
+			if (generation !== requestGeneration) return;
+			if (err instanceof api.ApiError && err.status === 401) handleSessionInvalidated(err.message);
+			if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await refreshStatus(); setError(t('accurate.contextChanged')); }
+			else setError(err instanceof Error ? err.message : t('barcode.searchItemsFailed'));
+		} finally { if (generation === requestGeneration) setIsLoading(false); }
+	};
 
   const toggleSelect = (id: number) => {
     const next = new Set(selectedIds());
@@ -106,6 +122,10 @@ export const ItemSearchDrawer: Component<ItemSearchDrawerProps> = (props) => {
             <SheetDescription class="text-xs">
               {t('barcode.searchInventoryDesc')}
             </SheetDescription>
+			<Show when={activeStatus().accountId}>
+				<p class="mt-1 text-xs text-muted-foreground">{activeStatus().accountName} · {activeStatus().database?.alias}</p>
+			</Show>
+			<Show when={!activeStatus().accountId}><p class="mt-1 text-xs text-muted-foreground">{t('accurate.noActiveAccount')}</p></Show>
           </SheetHeader>
 
           {/* Search Controls */}

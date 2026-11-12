@@ -32,8 +32,9 @@ import {
 import { useI18n } from '~/i18n';
 import {
   refreshStatus,
-  setIsLoginModalOpen,
-  status,
+	handleSessionInvalidated,
+	setPendingChallengeFor,
+	activeStatus,
 } from '~/stores/accurateAuth';
 import { qtyMode } from '~/stores/barcodeConfig';
 import {
@@ -75,6 +76,26 @@ export const QueueTab: Component = () => {
 
   onMount(() => {
     void refreshStatus();
+    const onFocus = () => void refreshStatus();
+    window.addEventListener('focus', onFocus);
+    onCleanup(() => window.removeEventListener('focus', onFocus));
+  });
+
+	let priorAccountContext = '';
+	let priorAccountID: number | null = null;
+  createEffect(() => {
+	const currentID = activeStatus().accountId ?? null;
+	const current = `${currentID ?? ''}:${activeStatus().database?.id ?? ''}`;
+    if (priorAccountContext && current !== priorAccountContext) {
+      searchRequestId++;
+      setSearchResults([]);
+      setSearchMessage(null);
+      setIsPopupOpen(false);
+      setHighlightedIndex(-1);
+	if (priorAccountID != null) setPendingChallengeFor(priorAccountID, null);
+    }
+	priorAccountContext = current;
+	priorAccountID = currentID;
   });
 
   onCleanup(() => {
@@ -129,13 +150,16 @@ export const QueueTab: Component = () => {
   };
 
   const executeSearch = async (q: string, fromEnter: boolean) => {
-    const reqId = ++searchRequestId;
+	const reqId = ++searchRequestId;
+	const accountID = activeStatus().accountId;
+	const databaseID = activeStatus().database?.id;
+	if (!accountID || !databaseID) { setIsSearching(false); setSearchMessage(t('accurate.noActiveAccount')); setSearchResults([]); setIsPopupOpen(false); return; }
     setIsSearching(true);
     setSearchMessage(null);
 
     try {
-      const res = await api.searchAccurateItems({ q, page: 1, pageSize: 50 });
-      if (reqId !== searchRequestId) return;
+	const res = await api.searchAccurateItems({ q, page: 1, pageSize: 50, accountId: accountID });
+	if (reqId !== searchRequestId || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
 
       const all = res.items || [];
       const printable = all.filter((it) => it.canPrintBarcode);
@@ -161,14 +185,20 @@ export const QueueTab: Component = () => {
         setIsPopupOpen(true);
         setHighlightedIndex(0);
       }
-    } catch {
-      if (reqId !== searchRequestId) return;
-      setSearchResults([]);
+	} catch (err) {
+	setSearchResults([]);
+		if (err instanceof api.ApiError && err.status === 401) {
+			handleSessionInvalidated(err.message);
+			if (fromEnter) setSearchMessage(err.message);
+		} else if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) {
+			void refreshStatus();
+			setSearchMessage(t('accurate.contextChanged'));
+		}
       setIsPopupOpen(false);
       setHighlightedIndex(-1);
-      if (fromEnter) {
-        setSearchMessage('Error searching Accurate items.');
-      }
+		if (!(err instanceof api.ApiError && [401,403,409].includes(err.status)) && fromEnter) {
+			setSearchMessage('Error searching Accurate items.');
+		}
     } finally {
       if (reqId === searchRequestId) {
         setIsSearching(false);
@@ -181,7 +211,7 @@ export const QueueTab: Component = () => {
     setSearchQuery(val);
     clearTimeout(debounceTimer);
 
-    if (val.trim().length >= 2 && status().connected) {
+    if (val.trim().length >= 2 && activeStatus().connected) {
       debounceTimer = window.setTimeout(() => {
         void executeSearch(val.trim(), false);
       }, 250);
@@ -225,7 +255,7 @@ export const QueueTab: Component = () => {
       const idx = highlightedIndex();
       if (isPopupOpen() && idx >= 0 && idx < searchResults().length) {
         addInventoryItemToList(searchResults()[idx]);
-      } else if (status().connected) {
+      } else if (activeStatus().connected) {
         void executeSearch(val, true);
       } else {
         addItem({
@@ -260,7 +290,7 @@ export const QueueTab: Component = () => {
                   onInput={handleSearchInput}
                   onKeyDown={handleSearchKeyDown}
                   placeholder={
-                    status().connected
+                    activeStatus().connected
                       ? t('barcode.scanPlaceholder')
                       : t('barcode.scanPlaceholderOffline')
                   }
@@ -307,7 +337,7 @@ export const QueueTab: Component = () => {
 
             {/* Import Buttons Group + Accurate status badge */}
             <div class="flex items-center gap-2 flex-wrap">
-              <Show when={status().connected}>
+              <Show when={activeStatus().connected}>
                 <PermissionGuard permission="accurate:read">
                   <Button
                     variant="outline"
@@ -333,7 +363,7 @@ export const QueueTab: Component = () => {
 
               {/* Accurate Connection Status */}
               <Show
-                when={status().enabled}
+                when={activeStatus().enabled}
                 fallback={
                   <Badge variant="outline" class="text-xs text-muted-foreground border-dashed h-9 px-3">
                     {t('barcode.offlineMode')}
@@ -341,7 +371,7 @@ export const QueueTab: Component = () => {
                 }
               >
                 <Show
-                  when={status().connected}
+                  when={activeStatus().connected}
                   fallback={
                     <PermissionGuard
                       permission="accurate:create"
@@ -369,7 +399,7 @@ export const QueueTab: Component = () => {
                       <div class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
                         <IconPlugConnected class="size-3.5" />
                         <span class="truncate max-w-[140px] font-semibold">
-                          {status().database?.alias || t('barcode.connected')}
+							{activeStatus().accountName ? `${activeStatus().accountName} · ` : ''}{activeStatus().database?.alias || t('barcode.connected')}
                         </span>
                       </div>
                     }
@@ -381,7 +411,7 @@ export const QueueTab: Component = () => {
                     >
                       <IconPlugConnected class="size-3.5" />
                       <span class="truncate max-w-[140px] font-semibold">
-                        {status().database?.alias || t('barcode.connected')}
+							{activeStatus().accountName ? `${activeStatus().accountName} · ` : ''}{activeStatus().database?.alias || t('barcode.connected')}
                       </span>
                     </button>
                   </Show>
@@ -391,6 +421,9 @@ export const QueueTab: Component = () => {
           </div>
         </CardContent>
       </Card>
+		<Show when={!activeStatus().accountId}>
+			<p class="text-sm text-muted-foreground">{t('accurate.noActiveAccount')}</p>
+		</Show>
 
       {/* Card 2: Queued Items Table */}
       <Card class="no-print">

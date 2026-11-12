@@ -2,6 +2,7 @@ import { ROUTES } from './routes';
 
 import { ColorModeProvider, ColorModeScript, createLocalStorageManager } from '@kobalte/core';
 import { Navigate, Route, Router } from '@solidjs/router';
+import { lazy } from 'solid-js';
 import { render } from 'solid-js/web';
 import './app.css';
 
@@ -14,6 +15,10 @@ import { Terms } from './pages/Terms';
 import { UserManagement } from './pages/UserManagement';
 import { RoleManagement } from './pages/RoleManagement';
 import { RBACTemplate } from './pages/RBACTemplate';
+
+const AccurateAccount = lazy(() =>
+  import('~/pages/AccurateAccount').then((m) => ({ default: m.AccurateAccount }))
+);
 
 const storageManager = createLocalStorageManager('warehouse-barcode-ui-theme');
 
@@ -29,6 +34,7 @@ if (root) {
               <Router root={App}>
                 <Route path={ROUTES.root} component={() => <Navigate href={ROUTES.barcode} />} />
                 <Route path={ROUTES.barcode} component={Barcode} />
+                <Route path={ROUTES.accurate} component={AccurateAccount} />
                 <Route path={ROUTES.users} component={UserManagement} />
                 <Route path={ROUTES.roles} component={RoleManagement} />
                 <Route path={ROUTES.rbacTemplate} component={RBACTemplate} />

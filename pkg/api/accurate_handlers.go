@@ -11,67 +11,183 @@ import (
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/adapter"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/provider/official"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/provider/web"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/model"
+	"github.com/awang-karisma/cim-warehouse-barcode/pkg/storage"
 	"github.com/danielgtaylor/huma/v2"
 )
 
 const ErrAccurateSessionInvalidatedDetail = "Your Accurate session was invalidated or expired. Please sign in again."
 
 func (s *Server) checkAccurateEnabled() error {
-	if s.accurateProvider == nil || s.accurateSession == nil || s.appConfig == nil || s.appConfig.AccurateProvider == "" {
+	if s.accurateProvider == nil || s.accurateSession == nil || s.appConfig == nil {
 		return huma.Error401Unauthorized("Accurate integration is not enabled")
 	}
 	return nil
 }
 
+func (s *Server) resolveAccurateAccount(ctx context.Context, requested *int64) (*Server, *storage.AccurateAccount, error) {
+	if requested != nil && *requested <= 0 {
+		return nil, nil, huma.Error400BadRequest("accountId must be positive")
+	}
+	var active *storage.AccurateAccount
+	var err error
+	active, err = s.store.GetDefaultAccurateAccount(ctx)
+	if err != nil && !errors.Is(err, storage.ErrNotFound) {
+		return nil, nil, huma.Error500InternalServerError("Failed to resolve active Accurate account")
+	}
+	accountID := int64(0)
+	if requested != nil {
+		accountID = *requested
+	} else if active != nil {
+		accountID = active.ID
+	} else {
+		return nil, nil, huma.Error409Conflict("No Accurate account is selected")
+	}
+	unlock := s.accountPool.LockAccount(accountID)
+	lockTransferred := false
+	defer func() {
+		if !lockTransferred {
+			unlock()
+		}
+	}()
+	a, err := s.store.GetAccurateAccount(ctx, accountID)
+	if errors.Is(err, storage.ErrNotFound) {
+		return nil, nil, huma.Error404NotFound("Accurate account not found")
+	}
+	if err != nil {
+		return nil, nil, huma.Error500InternalServerError("Failed to load Accurate account")
+	}
+	if requested != nil && (active == nil || active.ID != a.ID) {
+		claims := claimsFromContext(ctx)
+		allowed := claims == nil && (s.appConfig == nil || s.appConfig.GoogleClientID == "") || claims != nil && claims.Role == "superadmin"
+		if claims != nil {
+			for _, p := range claims.Permissions {
+				if p == string(model.PermAccurateAccountRead) {
+					allowed = true
+					break
+				}
+			}
+		}
+		if !allowed {
+			return nil, nil, huma.Error403Forbidden("Reading another Accurate account requires accurate_account:read")
+		}
+	}
+	if !a.Enabled {
+		return nil, nil, huma.Error409Conflict("Accurate account is disabled")
+	}
+	box, err := s.accountBox()
+	if err != nil {
+		return nil, nil, huma.Error503ServiceUnavailable("Accurate account encryption is not configured")
+	}
+	password, err := openAccountSecret(box, a.ID, "password", a.Password)
+	if err != nil {
+		return nil, nil, huma.Error500InternalServerError("Accurate account credentials cannot be decrypted")
+	}
+	token, err := openAccountSecret(box, a.ID, "api_token", a.APIToken)
+	if err != nil {
+		return nil, nil, huma.Error500InternalServerError("Accurate account credentials cannot be decrypted")
+	}
+	signature, err := openAccountSecret(box, a.ID, "signature_secret", a.SignatureSecret)
+	if err != nil {
+		return nil, nil, huma.Error500InternalServerError("Accurate account credentials cannot be decrypted")
+	}
+	entry, err := s.accountPool.Resolve(a.ID, a.Provider, a.Email, password, token, signature)
+	if err != nil {
+		return nil, nil, huma.Error500InternalServerError("Accurate account provider could not be initialized")
+	}
+	copy := *s
+	copy.accurateProvider = entry.Provider
+	copy.accurateSession = entry.Session
+	copy.accurateRegistry = entry.Registry
+	copy.accountEmail = a.Email
+	copy.accountOperationUnlock = unlock
+	lockTransferred = true
+	return &copy, a, nil
+}
+
 // 1. GET /api/v1/accurate/status
 type AccurateStatusOutput struct {
 	Body struct {
-		Enabled   bool               `json:"enabled"`
-		Provider  string             `json:"provider,omitempty"`
-		Connected bool               `json:"connected"`
-		Database  *accurate.Database `json:"database,omitempty"`
+		Enabled     bool               `json:"enabled"`
+		Provider    string             `json:"provider,omitempty"`
+		Connected   bool               `json:"connected"`
+		Database    *accurate.Database `json:"database,omitempty"`
+		AccountID   *int64             `json:"accountId,omitempty"`
+		AccountName string             `json:"accountName,omitempty"`
 	}
 }
+type accurateStatusInput struct {
+	AccountID string `query:"accountId"`
+}
 
-func (s *Server) handleAccurateStatus(ctx context.Context, input *struct{}) (*AccurateStatusOutput, error) {
-	if s.accurateProvider == nil || s.accurateSession == nil || s.appConfig == nil || s.appConfig.AccurateProvider == "" {
-		return &AccurateStatusOutput{
-			Body: struct {
-				Enabled   bool               `json:"enabled"`
-				Provider  string             `json:"provider,omitempty"`
-				Connected bool               `json:"connected"`
-				Database  *accurate.Database `json:"database,omitempty"`
-			}{
-				Enabled:   false,
-				Connected: false,
-			},
-		}, nil
+func (s *Server) handleAccurateStatus(ctx context.Context, input *accurateStatusInput) (*AccurateStatusOutput, error) {
+	var id *int64
+	if input != nil {
+		id = accountIDParam(input.AccountID)
 	}
+	if id == nil {
+		a, err := s.store.GetDefaultAccurateAccount(ctx)
+		if errors.Is(err, storage.ErrNotFound) {
+			return &AccurateStatusOutput{}, nil
+		}
+		if err != nil {
+			return nil, huma.Error500InternalServerError("Failed to read active Accurate account")
+		}
+		id = &a.ID
+	}
+	resolved, a, err := s.resolveAccurateAccount(ctx, id)
+	if err != nil {
+		if statusErr, ok := err.(interface{ GetStatus() int }); ok && statusErr.GetStatus() == 404 {
+			return &AccurateStatusOutput{}, nil
+		}
+		return nil, err
+	}
+	defer resolved.releaseAccountOperation()
+	st := resolved.accurateSession.Status()
+	out := &AccurateStatusOutput{}
+	out.Body.Enabled = true
+	out.Body.Provider = resolved.accurateProvider.ID()
+	out.Body.Connected = st.Connected
+	out.Body.Database = st.Database
+	out.Body.AccountID = &a.ID
+	out.Body.AccountName = a.Name
+	return out, nil
+}
 
-	st := s.accurateSession.Status()
-	return &AccurateStatusOutput{
-		Body: struct {
-			Enabled   bool               `json:"enabled"`
-			Provider  string             `json:"provider,omitempty"`
-			Connected bool               `json:"connected"`
-			Database  *accurate.Database `json:"database,omitempty"`
-		}{
-			Enabled:   true,
-			Provider:  s.accurateProvider.ID(),
-			Connected: st.Connected,
-			Database:  st.Database,
-		},
-	}, nil
+func accountIDParam(raw string) *int64 {
+	if raw == "" {
+		return nil
+	}
+	id, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || id <= 0 {
+		invalid := int64(-1)
+		return &invalid
+	}
+	return &id
+}
+func (s *Server) accountServerForRequest(ctx context.Context, id *int64) (*Server, error) {
+	resolved, _, err := s.resolveAccurateAccount(ctx, id)
+	return resolved, err
+}
+func (s *Server) releaseAccountOperation() {
+	if s.accountOperationUnlock != nil {
+		unlock := s.accountOperationUnlock
+		s.accountOperationUnlock = nil
+		unlock()
+	}
 }
 
 // 2. POST /api/v1/accurate/login
 type AccurateLoginInput struct {
-	Body struct {
+	AccountID string `query:"accountId"`
+	Body      struct {
 		ChallengeID *string `json:"challengeId,omitempty" doc:"Pending MFA challenge ID when completing MFA"`
 		OTP         *string `json:"otp,omitempty" doc:"One-time code from authenticator app"`
 	}
 }
-
+type accurateAccountQuery struct {
+	AccountID string `query:"accountId"`
+}
 type AccurateLoginOutput struct {
 	Body struct {
 		Status      string `json:"status" doc:"'success' or 'mfa_required'"`
@@ -80,6 +196,14 @@ type AccurateLoginOutput struct {
 }
 
 func (s *Server) handleAccurateLogin(ctx context.Context, input *AccurateLoginInput) (*AccurateLoginOutput, error) {
+	if input != nil {
+		resolved, err := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+		if err != nil {
+			return nil, err
+		}
+		s = resolved
+		defer s.releaseAccountOperation()
+	}
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
@@ -95,7 +219,7 @@ func (s *Server) handleAccurateLogin(ctx context.Context, input *AccurateLoginIn
 
 	res, err := s.accurateProvider.Login(ctx, challengeID, otp)
 	if err != nil {
-		return nil, huma.Error401Unauthorized(fmt.Sprintf("Login failed: %v", err))
+		return nil, huma.Error401Unauthorized("Accurate login failed")
 	}
 
 	if res.Status == accurate.LoginMFARequired {
@@ -108,6 +232,10 @@ func (s *Server) handleAccurateLogin(ctx context.Context, input *AccurateLoginIn
 				ChallengeID: res.ChallengeID,
 			},
 		}, nil
+	}
+	if err := s.accurateSession.SetEmail(s.accountEmail); err != nil {
+		s.accurateSession.InvalidateSession()
+		return nil, huma.Error500InternalServerError("Failed to persist Accurate session")
 	}
 
 	return &AccurateLoginOutput{
@@ -127,11 +255,21 @@ type AccurateLogoutOutput struct {
 	}
 }
 
-func (s *Server) handleAccurateLogout(ctx context.Context, input *struct{}) (*AccurateLogoutOutput, error) {
+func (s *Server) handleAccurateLogout(ctx context.Context, input *accurateAccountQuery) (*AccurateLogoutOutput, error) {
+	if input != nil {
+		resolved, err := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+		if err != nil {
+			return nil, err
+		}
+		s = resolved
+		defer s.releaseAccountOperation()
+	}
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
-	s.accurateSession.Logout()
+	if err := s.accurateSession.Logout(); err != nil {
+		return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+	}
 	return &AccurateLogoutOutput{
 		Body: struct {
 			Success bool `json:"success"`
@@ -144,25 +282,33 @@ type AccurateDatabasesOutput struct {
 	Body []accurate.Database
 }
 
-func (s *Server) handleAccurateDatabases(ctx context.Context, input *struct{}) (*AccurateDatabasesOutput, error) {
+func (s *Server) handleAccurateDatabases(ctx context.Context, input *accurateAccountQuery) (*AccurateDatabasesOutput, error) {
+	if input != nil {
+		resolved, err := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+		if err != nil {
+			return nil, err
+		}
+		s = resolved
+		defer s.releaseAccountOperation()
+	}
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
 	dbs, err := s.accurateProvider.ListDatabases(ctx)
 	if err != nil {
-		return nil, huma.Error401Unauthorized(fmt.Sprintf("Failed to list databases: %v", err))
+		return nil, huma.Error401Unauthorized("Failed to list Accurate databases")
 	}
 	return &AccurateDatabasesOutput{Body: dbs}, nil
 }
 
 // 5. POST /api/v1/accurate/database
 type AccurateSelectDatabaseInput struct {
-	Body struct {
+	AccountID string `query:"accountId"`
+	Body      struct {
 		ID       *int64  `json:"id,omitempty"`
 		UniqueID *string `json:"uniqueId,omitempty"`
 	}
 }
-
 type AccurateSelectDatabaseOutput struct {
 	Body struct {
 		Success  bool              `json:"success"`
@@ -171,6 +317,14 @@ type AccurateSelectDatabaseOutput struct {
 }
 
 func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *AccurateSelectDatabaseInput) (*AccurateSelectDatabaseOutput, error) {
+	if input != nil {
+		resolved, err := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+		if err != nil {
+			return nil, err
+		}
+		s = resolved
+		defer s.releaseAccountOperation()
+	}
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
@@ -181,7 +335,7 @@ func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *Accura
 
 	dbs, err := s.accurateProvider.ListDatabases(ctx)
 	if err != nil {
-		return nil, huma.Error401Unauthorized(fmt.Sprintf("Failed to fetch databases: %v", err))
+		return nil, huma.Error401Unauthorized("Failed to fetch Accurate databases")
 	}
 
 	var target *accurate.Database
@@ -202,7 +356,7 @@ func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *Accura
 
 	openedDB, err := s.accurateProvider.OpenDatabase(ctx, target.ID)
 	if err != nil {
-		return nil, huma.Error500InternalServerError(fmt.Sprintf("Failed to establish database session: %v", err))
+		return nil, huma.Error500InternalServerError("Failed to establish Accurate database session")
 	}
 
 	if target.Alias != "" && openedDB.Alias == "" {
@@ -210,8 +364,12 @@ func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *Accura
 	}
 
 	if wp, ok := s.accurateProvider.(*web.Provider); ok {
-		if ts, ok := wp.TenantSession(); ok {
-			s.accurateSession.SetTenantSession(ts)
+		ts, ok := wp.TenantSession()
+		if !ok {
+			return nil, huma.Error500InternalServerError("Accurate provider did not establish a tenant session")
+		}
+		if err := s.accurateSession.SetTenantSession(ts); err != nil {
+			return nil, huma.Error500InternalServerError("Failed to persist Accurate database session")
 		}
 	} else if op, ok := s.accurateProvider.(*official.Provider); ok {
 		host := op.Host()
@@ -219,12 +377,14 @@ func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *Accura
 			host = openedDB.Host
 			op.SetSession(host, op.SessionID(), openedDB)
 		}
-		s.accurateSession.SetOfficialSession(&accurate.OfficialSessionState{
-			DatabaseID: openedDB.ID,
-			Host:       host,
-			Session:    op.SessionID(),
-			Database:   openedDB,
-		})
+		if err := s.accurateSession.SetOfficialSession(&accurate.OfficialSessionState{DatabaseID: openedDB.ID, Host: host, Session: op.SessionID(), Database: openedDB}); err != nil {
+			return nil, huma.Error500InternalServerError("Failed to persist Accurate database session")
+		}
+	} else if s.accurateProvider.ID() == string(accurate.ProviderOfficial) {
+		host := openedDB.Host
+		if err := s.accurateSession.SetOfficialSession(&accurate.OfficialSessionState{DatabaseID: openedDB.ID, Host: host, Database: openedDB}); err != nil {
+			return nil, huma.Error500InternalServerError("Failed to persist Accurate database session")
+		}
 	}
 
 	return &AccurateSelectDatabaseOutput{
@@ -240,9 +400,10 @@ func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *Accura
 
 // 6. GET /api/v1/accurate/items
 type AccurateItemsInput struct {
-	Q        string `query:"q" doc:"Search query keyword"`
-	Page     int    `query:"page" default:"1" doc:"1-based page index"`
-	PageSize int    `query:"pageSize" default:"50" doc:"Items per page"`
+	AccountID string `query:"accountId"`
+	Q         string `query:"q" doc:"Search query keyword"`
+	Page      int    `query:"page" default:"1" doc:"1-based page index"`
+	PageSize  int    `query:"pageSize" default:"50" doc:"Items per page"`
 }
 
 type AccurateItemsOutput struct {
@@ -250,6 +411,12 @@ type AccurateItemsOutput struct {
 }
 
 func (s *Server) handleAccurateItems(ctx context.Context, input *AccurateItemsInput) (*AccurateItemsOutput, error) {
+	resolved, resolveErr := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	s = resolved
+	defer s.releaseAccountOperation()
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
@@ -280,7 +447,7 @@ func (s *Server) handleAccurateItems(ctx context.Context, input *AccurateItemsIn
 			s.accurateSession.InvalidateSession()
 			return nil, huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
 		}
-		return nil, huma.Error500InternalServerError(fmt.Sprintf("Failed to search items: %v", err))
+		return nil, huma.Error500InternalServerError("Failed to search Accurate items")
 	}
 
 	return &AccurateItemsOutput{Body: *res}, nil
@@ -291,7 +458,15 @@ type AccurateSourcesOutput struct {
 	Body []accurate.SourceInfo
 }
 
-func (s *Server) handleAccurateSources(ctx context.Context, input *struct{}) (*AccurateSourcesOutput, error) {
+func (s *Server) handleAccurateSources(ctx context.Context, input *accurateAccountQuery) (*AccurateSourcesOutput, error) {
+	if input != nil {
+		resolved, err := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+		if err != nil {
+			return nil, err
+		}
+		s = resolved
+		defer s.releaseAccountOperation()
+	}
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
@@ -303,12 +478,13 @@ func (s *Server) handleAccurateSources(ctx context.Context, input *struct{}) (*A
 
 // 8. GET /api/v1/accurate/sources/{source}/documents
 type AccurateSourceDocumentsInput struct {
-	Source   string `path:"source" doc:"Source adapter ID"`
-	Q        string `query:"q" doc:"Search keyword"`
-	From     string `query:"from" doc:"Filter start date (DD/MM/YYYY)"`
-	To       string `query:"to" doc:"Filter end date (DD/MM/YYYY)"`
-	Page     int    `query:"page" default:"1"`
-	PageSize int    `query:"pageSize" default:"20"`
+	AccountID string `query:"accountId"`
+	Source    string `path:"source" doc:"Source adapter ID"`
+	Q         string `query:"q" doc:"Search keyword"`
+	From      string `query:"from" doc:"Filter start date (DD/MM/YYYY)"`
+	To        string `query:"to" doc:"Filter end date (DD/MM/YYYY)"`
+	Page      int    `query:"page" default:"1"`
+	PageSize  int    `query:"pageSize" default:"20"`
 }
 
 type AccurateSourceDocumentsOutput struct {
@@ -319,6 +495,12 @@ type AccurateSourceDocumentsOutput struct {
 }
 
 func (s *Server) handleAccurateSourceDocuments(ctx context.Context, input *AccurateSourceDocumentsInput) (*AccurateSourceDocumentsOutput, error) {
+	resolved, resolveErr := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	s = resolved
+	defer s.releaseAccountOperation()
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
@@ -355,7 +537,7 @@ func (s *Server) handleAccurateSourceDocuments(ctx context.Context, input *Accur
 			s.accurateSession.InvalidateSession()
 			return nil, huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
 		}
-		return nil, huma.Error500InternalServerError(fmt.Sprintf("Failed to list documents for source '%s': %v", input.Source, err))
+		return nil, huma.Error500InternalServerError("Failed to list Accurate source documents")
 	}
 
 	return &AccurateSourceDocumentsOutput{
@@ -371,8 +553,9 @@ func (s *Server) handleAccurateSourceDocuments(ctx context.Context, input *Accur
 
 // 9. GET /api/v1/accurate/sources/{source}/documents/{id}/items
 type AccurateSourceDocumentItemsInput struct {
-	Source string `path:"source" doc:"Source adapter ID"`
-	ID     string `path:"id" doc:"Document ID"`
+	AccountID string `query:"accountId"`
+	Source    string `path:"source" doc:"Source adapter ID"`
+	ID        string `path:"id" doc:"Document ID"`
 }
 
 type AccurateSourceDocumentItemsOutput struct {
@@ -380,6 +563,12 @@ type AccurateSourceDocumentItemsOutput struct {
 }
 
 func (s *Server) handleAccurateSourceDocumentItems(ctx context.Context, input *AccurateSourceDocumentItemsInput) (*AccurateSourceDocumentItemsOutput, error) {
+	resolved, resolveErr := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+	if resolveErr != nil {
+		return nil, resolveErr
+	}
+	s = resolved
+	defer s.releaseAccountOperation()
 	if err := s.checkAccurateEnabled(); err != nil {
 		return nil, err
 	}
@@ -412,7 +601,7 @@ func (s *Server) handleAccurateSourceDocumentItems(ctx context.Context, input *A
 			s.accurateSession.InvalidateSession()
 			return nil, huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
 		}
-		return nil, huma.Error500InternalServerError(fmt.Sprintf("Failed to fetch document items: %v", err))
+		return nil, huma.Error500InternalServerError("Failed to fetch Accurate document items")
 	}
 
 	return &AccurateSourceDocumentItemsOutput{Body: items}, nil

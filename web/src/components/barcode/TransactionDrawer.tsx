@@ -1,7 +1,7 @@
-import { type Component, createEffect, createSignal, For, Show } from 'solid-js';
+import { type Component, createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
 import { useI18n } from '~/i18n';
 import * as api from '~/api';
-import { handleSessionInvalidated } from '~/stores/accurateAuth';
+	import { handleSessionInvalidated, refreshStatus, activeStatus } from '~/stores/accurateAuth';
 import { addNormalizedItems } from '~/stores/barcodeItems';
 import type { AccurateDocumentHeader, AccurateNormalizedItem, AccuratePagination, AccurateSourceInfo } from '~/types';
 import {
@@ -45,21 +45,36 @@ export const TransactionDrawer: Component<TransactionDrawerProps> = (props) => {
   const [isLoading, setIsLoading] = createSignal(false);
   const [error, setError] = createSignal<string | null>(null);
 
-  let listRequestToken = 0;
-  let detailRequestToken = 0;
+	let listRequestToken = 0;
+	let detailRequestToken = 0;
+	let observedContext = '';
+	createEffect(() => {
+		const context = `${activeStatus().accountId ?? ''}:${activeStatus().database?.id ?? ''}`;
+		if (context !== observedContext) {
+			observedContext = context;
+			listRequestToken++; detailRequestToken++;
+			setSources([]); setSelectedSource(''); setDocuments([]); setSelectedDoc(null); setDocItems([]); setSelectedItemIndices(new Set<number>()); setPagination({page:1,pageCount:1,pageSize:20,rowCount:0}); setIsLoading(false);
+		}
+	});
+	onMount(() => { const onFocus=()=>void refreshStatus(); window.addEventListener('focus',onFocus); onCleanup(()=>window.removeEventListener('focus',onFocus)); });
+	let wasOpen=false;
+	createEffect(() => { const open=props.isOpen; if(open&&!wasOpen) void refreshStatus(); wasOpen=open; });
 
-  createEffect(() => {
-    if (props.isOpen && sources().length === 0) {
-      void (async () => {
-        try {
-          const list = await api.getAccurateSources();
-          setSources(list);
-        } catch (err) {
-          setError(err instanceof Error ? err.message : t('barcode.fetchSourcesFailed'));
-        }
-      })();
-    }
-  });
+	createEffect(() => {
+		if (props.isOpen && sources().length === 0) {
+			void (async () => {
+				try {
+					await refreshStatus();
+					const accountID = activeStatus().accountId;
+					const databaseID = activeStatus().database?.id;
+					if (!accountID || !databaseID) { setError(t('accurate.noActiveAccount')); return; }
+					const list = await api.getAccurateSources(accountID);
+					if (activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
+					setSources(list);
+				} catch (err) { setError(err instanceof Error ? err.message : t('barcode.fetchSourcesFailed')); }
+			})();
+		}
+	});
 
   const formatToAccurateDate = (d: string) => {
     if (!d) return '';
@@ -72,64 +87,44 @@ export const TransactionDrawer: Component<TransactionDrawerProps> = (props) => {
 
   const fetchDocuments = async (sourceId: string, page = 1) => {
     if (!sourceId) return;
-
+    const accountID = activeStatus().accountId;
+    const databaseID = activeStatus().database?.id;
+    if (!accountID || !databaseID) { setDocuments([]); setError(t('accurate.noActiveAccount')); return; }
     const token = ++listRequestToken;
-    setIsLoading(true);
-    setError(null);
-    setSelectedDoc(null);
-    setDocItems([]);
-    setSelectedItemIndices(new Set<number>());
-
+    setIsLoading(true); setError(null); setSelectedDoc(null); setDocItems([]); setSelectedItemIndices(new Set<number>());
     try {
       const res = await api.getAccurateSourceDocuments(sourceId, {
-        q: searchQuery(),
-        from: formatToAccurateDate(fromDate()),
-        to: formatToAccurateDate(toDate()),
-        page,
-        pageSize: 20,
+        q: searchQuery(), from: formatToAccurateDate(fromDate()), to: formatToAccurateDate(toDate()), page, pageSize: 20, accountId: accountID,
       });
-      if (token !== listRequestToken) return;
-      setDocuments(res.documents);
-      setPagination(res.pagination);
+      if (token !== listRequestToken || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
+      setDocuments(res.documents); setPagination(res.pagination);
     } catch (err) {
-      if (token !== listRequestToken) return;
-      if (err instanceof api.ApiError && err.status === 401) {
-        handleSessionInvalidated(err.message);
-      }
-      setError(err instanceof Error ? err.message : t('barcode.loadDocumentsFailed'));
-    } finally {
-      if (token === listRequestToken) {
-        setIsLoading(false);
-      }
-    }
+      if (token !== listRequestToken || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
+      if (err instanceof api.ApiError && err.status === 401) handleSessionInvalidated(err.message);
+		if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await refreshStatus(); setError(t('accurate.contextChanged')); }
+      else setError(err instanceof Error ? err.message : t('barcode.loadDocumentsFailed'));
+    } finally { if (token === listRequestToken) setIsLoading(false); }
   };
 
   const handleSelectDoc = async (doc: AccurateDocumentHeader) => {
     const currentSource = selectedSource();
-    setSelectedDoc(doc);
-    setIsLoading(true);
-    setError(null);
-    setDocItems([]);
-    setSelectedItemIndices(new Set<number>());
-
+    const accountID = activeStatus().accountId;
+    const databaseID = activeStatus().database?.id;
+    if (!accountID || !databaseID) { setDocItems([]); setError(t('accurate.noActiveAccount')); return; }
+    setSelectedDoc(doc); setIsLoading(true); setError(null); setDocItems([]); setSelectedItemIndices(new Set<number>());
     const token = ++detailRequestToken;
     try {
-      const items = await api.getAccurateSourceDocumentItems(currentSource, doc.id);
-      if (token !== detailRequestToken || selectedSource() !== currentSource) return;
-      setDocItems(items);
-      setSelectedItemIndices(new Set(items.map((_, i) => i)));
+      const items = await api.getAccurateSourceDocumentItems(currentSource, doc.id, accountID);
+      if (token !== detailRequestToken || selectedSource() !== currentSource || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
+      setDocItems(items); setSelectedItemIndices(new Set(items.map((_, i) => i)));
     } catch (err) {
-      if (token !== detailRequestToken || selectedSource() !== currentSource) return;
-      if (err instanceof api.ApiError && err.status === 401) {
-        handleSessionInvalidated(err.message);
-      }
-      setError(err instanceof Error ? err.message : t('barcode.loadDocItemsFailed'));
-    } finally {
-      if (token === detailRequestToken) {
-        setIsLoading(false);
-      }
-    }
+      if (token !== detailRequestToken || selectedSource() !== currentSource || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
+      if (err instanceof api.ApiError && err.status === 401) handleSessionInvalidated(err.message);
+		if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await refreshStatus(); setError(t('accurate.contextChanged')); }
+      else setError(err instanceof Error ? err.message : t('barcode.loadDocItemsFailed'));
+    } finally { if (token === detailRequestToken) setIsLoading(false); }
   };
+
 
   const handleAddItems = () => {
     const selected = docItems().filter((_, i) => selectedItemIndices().has(i));
@@ -152,6 +147,8 @@ export const TransactionDrawer: Component<TransactionDrawerProps> = (props) => {
             <SheetDescription class="text-xs">
               {t('barcode.loadTransactionsDesc')}
             </SheetDescription>
+			<Show when={activeStatus().accountId}><p class="mt-1 text-xs text-muted-foreground">{activeStatus().accountName} · {activeStatus().database?.alias}</p></Show>
+			<Show when={!activeStatus().accountId}><p class="mt-1 text-xs text-muted-foreground">{t('accurate.noActiveAccount')}</p></Show>
           </SheetHeader>
 
           {/* Source Tabs */}

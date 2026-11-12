@@ -1,16 +1,15 @@
 import { type Component, createSignal, For, Show } from 'solid-js';
 import { useI18n } from '~/i18n';
 import {
-  authError,
-  databases,
-  handleLogin,
-  handleLogout,
-  handleSelectDatabase,
-  isAuthLoading,
-  isLoginModalOpen,
-  pendingChallengeId,
-  setIsLoginModalOpen,
-  status,
+	activeAuthLoading,
+	activeDatabases,
+	activePendingChallengeId,
+	activeStatus,
+	handleLogin,
+	handleLogout,
+	handleSelectDatabase,
+	isLoginModalOpen,
+	setIsLoginModalOpen,
 } from '~/stores/accurateAuth';
 import { useAuth, PermissionGuard } from '~/auth';
 import {
@@ -31,7 +30,7 @@ export const AccurateLoginModal: Component = () => {
 
   const onRelogin = async (e: Event) => {
     e.preventDefault();
-    const success = await handleLogin(otp());
+	const success = await handleLogin(otp(), activeStatus().accountId);
     if (success) {
       setOtp('');
     }
@@ -48,66 +47,67 @@ export const AccurateLoginModal: Component = () => {
         <DialogHeader>
           <DialogTitle class="flex items-center gap-2 text-base">
             <Show
-              when={databases().length > 0 && !status().connected}
+              when={activeDatabases().length > 0 && !activeStatus().connected}
               fallback={
-                <Show when={pendingChallengeId()} fallback={<IconKey class="size-5 text-primary" />}>
+                <Show when={activePendingChallengeId()} fallback={<IconKey class="size-5 text-primary" />}>
                   <IconKey class="size-5 text-amber-500" />
                 </Show>
               }
             >
               <IconDatabase class="size-5 text-sky-500" />
             </Show>
-            {databases().length > 0 && !status().connected
+            {activeDatabases().length > 0 && !activeStatus().connected
               ? t('barcode.selectDatabase')
-              : pendingChallengeId()
+              : activePendingChallengeId()
               ? t('barcode.twoFactorTitle')
               : t('barcode.accurateConnection')}
           </DialogTitle>
           <DialogDescription>
-            {databases().length > 0 && !status().connected
+            {activeDatabases().length > 0 && !activeStatus().connected
               ? t('barcode.selectDatabaseDesc')
-              : pendingChallengeId()
+              : activePendingChallengeId()
               ? t('barcode.totpDesc')
               : t('barcode.connectAccurateDesc')}
           </DialogDescription>
+			<Show when={activeStatus().accountId}><p class="mt-1 text-xs text-muted-foreground">{activeStatus().accountName} · {activeStatus().database?.alias}</p></Show>
         </DialogHeader>
 
-        <Show when={authError()}>
+        <Show when={activeAuthError()}>
           <Alert variant="destructive">
             <IconAlertTriangle class="size-4" />
             <AlertTitle>{t('barcode.authNotice')}</AlertTitle>
-            <AlertDescription class="text-xs">{authError()}</AlertDescription>
+            <AlertDescription class="text-xs">{activeAuthError()}</AlertDescription>
           </Alert>
         </Show>
 
         {/* Database Selection */}
         {/* If already connected, show active connection & logout / switch database option */}
-        <Show when={status().connected}>
+        <Show when={activeStatus().connected}>
           <div class="space-y-4 py-2">
             <div class="rounded-lg border bg-muted/40 p-3 space-y-1">
               <div class="text-xs font-semibold text-foreground">
                 Connected Database
               </div>
               <div class="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                {status().database?.alias || `ID: ${status().database?.id}`}
+                {activeStatus().database?.alias || `ID: ${activeStatus().database?.id}`}
               </div>
               <div class="text-[11px] text-muted-foreground">
-                Host: {status().database?.host || 'Accurate Online'}
+                Host: {activeStatus().database?.host || 'Accurate Online'}
               </div>
             </div>
 
-            <Show when={databases().length > 1 && auth.hasPermission('accurate:update')}>
+            <Show when={activeDatabases().length > 1 && auth.hasPermission('accurate:update')}>
               <div class="space-y-2">
                 <label class="text-xs font-semibold text-foreground">Switch Database</label>
                 <div class="max-h-48 overflow-y-auto space-y-1.5 pr-1">
-                  <For each={databases()}>
+                  <For each={activeDatabases()}>
                     {(db) => (
                       <button
                         type="button"
                         onClick={() => void handleSelectDatabase(db.id)}
-                        disabled={isAuthLoading() || db.id === status().database?.id}
+                        disabled={activeAuthLoading() || db.id === activeStatus().database?.id}
                         class={`w-full text-left p-2.5 rounded-md border text-xs flex items-center justify-between transition-colors ${
-                          db.id === status().database?.id
+                          db.id === activeStatus().database?.id
                             ? 'bg-primary/10 border-primary font-medium'
                             : 'bg-card hover:bg-accent'
                         }`}
@@ -126,7 +126,7 @@ export const AccurateLoginModal: Component = () => {
                 {t('common.close')}
               </Button>
               <PermissionGuard permission="accurate:delete">
-                <Button variant="destructive" onClick={() => void handleLogout()} disabled={isAuthLoading()} class="gap-1.5">
+				<Button variant="destructive" onClick={() => void handleLogout(activeStatus().accountId)} disabled={activeAuthLoading()} class="gap-1.5">
                   <IconLogout class="size-4" />
                   <span>Sign Out</span>
                 </Button>
@@ -136,12 +136,12 @@ export const AccurateLoginModal: Component = () => {
         </Show>
 
         {/* Database Selection */}
-        <Show when={!status().connected}>
+        <Show when={!activeStatus().connected}>
         <Show
-          when={databases().length > 0}
+          when={activeDatabases().length > 0}
           fallback={
             <Show
-              when={pendingChallengeId()}
+              when={activePendingChallengeId()}
               fallback={
                 <div class="space-y-4 py-2">
                   <div class="rounded-lg border bg-muted/40 p-3 text-xs text-muted-foreground leading-relaxed">
@@ -156,11 +156,11 @@ export const AccurateLoginModal: Component = () => {
                       permission="accurate:create"
                       fallback={<Button disabled>Unauthorized</Button>}
                     >
-                      <Button onClick={onRelogin} disabled={isAuthLoading()}>
-                        <Show when={isAuthLoading()}>
+                      <Button onClick={onRelogin} disabled={activeAuthLoading()}>
+                        <Show when={activeAuthLoading()}>
                           <IconLoader2 class="mr-2 size-4 animate-spin" />
                         </Show>
-                        {isAuthLoading() ? t('barcode.connecting') : t('barcode.connectToAccurate')}
+                        {activeAuthLoading() ? t('barcode.connecting') : t('barcode.connectToAccurate')}
                       </Button>
                     </PermissionGuard>
                   </DialogFooter>
@@ -190,11 +190,11 @@ export const AccurateLoginModal: Component = () => {
                   <Button variant="outline" type="button" onClick={handleClose}>
                     {t('common.cancel')}
                   </Button>
-                  <Button type="submit" disabled={isAuthLoading() || otp().trim().length < 6}>
-                    <Show when={isAuthLoading()}>
+                  <Button type="submit" disabled={activeAuthLoading() || otp().trim().length < 6}>
+                    <Show when={activeAuthLoading()}>
                       <IconLoader2 class="mr-2 size-4 animate-spin" />
                     </Show>
-                    {isAuthLoading() ? t('barcode.verifying') : t('barcode.verifyContinue')}
+                    {activeAuthLoading() ? t('barcode.verifying') : t('barcode.verifyContinue')}
                   </Button>
                 </DialogFooter>
               </form>
@@ -206,12 +206,12 @@ export const AccurateLoginModal: Component = () => {
               {t('barcode.selectDatabasePrompt')}
             </p>
             <div class="max-h-60 overflow-y-auto space-y-2 pr-1">
-              <For each={databases()}>
+              <For each={activeDatabases()}>
                 {(db) => (
                   <button
                     type="button"
                     onClick={() => void handleSelectDatabase(db.id)}
-                    disabled={isAuthLoading()}
+                    disabled={activeAuthLoading()}
                     class="w-full text-left p-3 rounded-lg border bg-card hover:bg-accent hover:text-accent-foreground transition-colors flex items-center justify-between group"
                   >
                     <div>
