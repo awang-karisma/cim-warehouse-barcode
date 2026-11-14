@@ -59,6 +59,9 @@ func (s *Server) handleSystem(ctx context.Context, input *struct{}) (*SystemOutp
 		port = cfg.Port
 		dbPath = cfg.DBPath
 	}
+	if s.store != nil && s.store.IsPostgres() {
+		dbPath = "postgresql"
+	}
 
 	var tables map[string]storage.TableStat
 	if s.store != nil {

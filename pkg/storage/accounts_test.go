@@ -21,7 +21,7 @@ func TestAccountCiphertextRequiresCorrectKeyOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	st, err := storage.New(path, storageAccountKey)
+	st, err := storage.New(storage.Options{SQLitePath: path, EncryptionKey: storageAccountKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -32,13 +32,13 @@ func TestAccountCiphertextRequiresCorrectKeyOnRestart(t *testing.T) {
 	if err = st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = storage.New(path); err == nil {
+	if _, err = storage.New(storage.Options{SQLitePath: path}); err == nil {
 		t.Fatal("startup without key accepted encrypted credentials")
 	}
-	if _, err = storage.New(path, "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"); err == nil {
+	if _, err = storage.New(storage.Options{SQLitePath: path, EncryptionKey: "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"}); err == nil {
 		t.Fatal("startup with wrong key accepted ciphertext")
 	}
-	restored, err := storage.New(path, storageAccountKey)
+	restored, err := storage.New(storage.Options{SQLitePath: path, EncryptionKey: storageAccountKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestAccountCiphertextRequiresCorrectKeyOnRestart(t *testing.T) {
 }
 
 func TestFailedAccountEncryptionRollsBackRow(t *testing.T) {
-	st, err := storage.New(filepath.Join(t.TempDir(), "rollback.db"))
+	st, err := storage.New(storage.Options{SQLitePath: filepath.Join(t.TempDir(), "rollback.db")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestFailedAccountEncryptionRollsBackRow(t *testing.T) {
 func TestDisableClearsDefaultAndAccountSession(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "disable.db")
-	st, err := storage.New(path, storageAccountKey)
+	st, err := storage.New(storage.Options{SQLitePath: path, EncryptionKey: storageAccountKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestAdminAccountPermissionsMigrateOnceAndRevocationPersists(t *testing.T) {
 	if err = db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	st, err := storage.New(path, storageAccountKey)
+	st, err := storage.New(storage.Options{SQLitePath: path, EncryptionKey: storageAccountKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestAdminAccountPermissionsMigrateOnceAndRevocationPersists(t *testing.T) {
 	if err = st.Close(); err != nil {
 		t.Fatal(err)
 	}
-	st, err = storage.New(path, storageAccountKey)
+	st, err = storage.New(storage.Options{SQLitePath: path, EncryptionKey: storageAccountKey})
 	if err != nil {
 		t.Fatal(err)
 	}

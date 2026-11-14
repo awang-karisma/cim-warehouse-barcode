@@ -75,7 +75,7 @@ func TestAccurateAccountsResolveIsolatedActiveInventoryAcrossRestart(t *testing.
 	factory := func(_ string, _ string, _ string, token string, _ string) (accurate.Provider, error) {
 		return &inventoryFixtureProvider{item: token}, nil
 	}
-	store, err := storage.New(path, multiAccountTestKey)
+	store, err := storage.New(storage.Options{SQLitePath: path, EncryptionKey: multiAccountTestKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestAccurateAccountsResolveIsolatedActiveInventoryAcrossRestart(t *testing.
 	if err = store.Close(); err != nil {
 		t.Fatal(err)
 	}
-	store, err = storage.New(path, multiAccountTestKey)
+	store, err = storage.New(storage.Options{SQLitePath: path, EncryptionKey: multiAccountTestKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,7 +269,7 @@ func TestAccurateAccountsResolveIsolatedActiveInventoryAcrossRestart(t *testing.
 func TestAccurateQueryKeepsResolvedAccountAcrossActivation(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "blocked.db")
-	store, err := storage.New(path, multiAccountTestKey)
+	store, err := storage.New(storage.Options{SQLitePath: path, EncryptionKey: multiAccountTestKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -348,7 +348,7 @@ func TestAccurateQueryKeepsResolvedAccountAcrossActivation(t *testing.T) {
 
 func TestMFAChallengeCannotAuthenticateAnotherAccount(t *testing.T) {
 	ctx := context.Background()
-	store, err := storage.New(filepath.Join(t.TempDir(), "mfa.db"), multiAccountTestKey)
+	store, err := storage.New(storage.Options{SQLitePath: filepath.Join(t.TempDir(), "mfa.db"), EncryptionKey: multiAccountTestKey})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +411,7 @@ func TestMFAChallengeCannotAuthenticateAnotherAccount(t *testing.T) {
 func TestWarehouseUserUsesActiveAccountWithoutCredentialPermission(t *testing.T) {
 	ctx := context.Background()
 	key := multiAccountTestKey
-	store, err := storage.New(filepath.Join(t.TempDir(), "user-active.db"), key)
+	store, err := storage.New(storage.Options{SQLitePath: filepath.Join(t.TempDir(), "user-active.db"), EncryptionKey: key})
 	if err != nil {
 		t.Fatal(err)
 	}

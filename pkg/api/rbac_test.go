@@ -29,7 +29,7 @@ type testEnv struct {
 func setupTestServer(t *testing.T, authEnabled bool) *testEnv {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test_api.db")
-	store, err := storage.New(dbPath)
+	store, err := storage.New(storage.Options{SQLitePath: dbPath})
 	if err != nil {
 		t.Fatalf("failed to create test storage: %v", err)
 	}

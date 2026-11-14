@@ -17,7 +17,7 @@ func TestSessionManager_Persistence(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "session_mgr_test.db")
 
-	st, err := storage.New(dbPath, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	st, err := storage.New(storage.Options{SQLitePath: dbPath, EncryptionKey: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"})
 	if err != nil {
 		t.Fatalf("storage.New() failed: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "session_mgr_invalidate_test.db")
 
-	st, err := storage.New(dbPath, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	st, err := storage.New(storage.Options{SQLitePath: dbPath, EncryptionKey: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"})
 	if err != nil {
 		t.Fatalf("storage.New() failed: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestSessionManager_OfficialPersistenceWithoutSessionID(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "session_mgr_official_test.db")
 
-	st, err := storage.New(dbPath, "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f")
+	st, err := storage.New(storage.Options{SQLitePath: dbPath, EncryptionKey: "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f"})
 	if err != nil {
 		t.Fatalf("storage.New() failed: %v", err)
 	}

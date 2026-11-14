@@ -13,7 +13,7 @@ import (
 func newTestStorage(t *testing.T) *storage.Storage {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "test.db")
-	s, err := storage.New(dbPath)
+	s, err := storage.New(storage.Options{SQLitePath: dbPath})
 	if err != nil {
 		t.Fatalf("failed to create storage: %v", err)
 	}

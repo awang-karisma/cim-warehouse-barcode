@@ -6,11 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate/accounts"
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/model"
+	_ "github.com/lib/pq"
 	_ "modernc.org/sqlite"
 )
 
@@ -31,47 +35,79 @@ type TableStat struct {
 	RowCount int `json:"row_count"`
 }
 
-// Storage provides SQLite persistence for barcode layouts, user accounts, and Accurate session state.
+// Options selects the active database and optional Accurate encryption key.
+type Options struct {
+	SQLitePath    string
+	DatabaseURL   string
+	EncryptionKey string
+}
+
+// Storage provides persistence for barcode layouts, user accounts, and Accurate session state.
 type Storage struct {
 	db        *sql.DB
+	dialect   string
 	secretBox *accounts.SecretBox
 }
 
-// New opens SQLite and configures account-secret encryption when a key is supplied.
-func New(dbPath string, encryptionKey ...string) (*Storage, error) {
-	dsn := dbPath
-	if !strings.Contains(dbPath, "_pragma=journal_mode") && !strings.Contains(dbPath, "_pragma=busy_timeout") {
-		sep := "?"
-		if strings.Contains(dbPath, "?") {
-			sep = "&"
+// New opens the selected database, runs forward-only migrations, and verifies encrypted records.
+func New(options Options) (*Storage, error) {
+	options.DatabaseURL = strings.TrimSpace(options.DatabaseURL)
+	dialect, driver, dsn := "sqlite", "sqlite", options.SQLitePath
+	if options.DatabaseURL != "" {
+		u, err := url.Parse(options.DatabaseURL)
+		if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") {
+			return nil, errors.New("invalid PostgreSQL database configuration")
 		}
-		dsn = fmt.Sprintf("%s%s_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)", dbPath, sep)
+		dialect, driver, dsn = "postgres", "postgres", options.DatabaseURL
+	} else {
+		if dsn == "" {
+			return nil, errors.New("SQLite path is required")
+		}
+		if !strings.HasPrefix(dsn, ":memory:") && !strings.Contains(dsn, "mode=memory") {
+			if dir := filepath.Dir(dsn); dir != "." && dir != "" {
+				if err := os.MkdirAll(dir, 0755); err != nil {
+					return nil, fmt.Errorf("create SQLite database directory: %w", err)
+				}
+			}
+		}
+		if !strings.Contains(dsn, "_pragma=journal_mode") && !strings.Contains(dsn, "_pragma=busy_timeout") {
+			sep := "?"
+			if strings.Contains(dsn, "?") {
+				sep = "&"
+			}
+			dsn += sep + "_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)"
+		}
 	}
-
-	db, err := sql.Open("sqlite", dsn)
+	db, err := sql.Open(driver, dsn)
 	if err != nil {
-		return nil, fmt.Errorf("failed to open sqlite database: %w", err)
+		return nil, fmt.Errorf("open %s database: %w", dialect, err)
 	}
-
-	// For in-memory databases, ensure all queries reuse the same connection instance
-	if strings.HasPrefix(dbPath, ":memory:") || strings.Contains(dbPath, "mode=memory") {
+	if dialect == "sqlite" && (strings.HasPrefix(options.SQLitePath, ":memory:") || strings.Contains(options.SQLitePath, "mode=memory")) {
 		db.SetMaxOpenConns(1)
 	}
-
-	s := &Storage{db: db}
-	if len(encryptionKey) > 0 && encryptionKey[0] != "" {
-		box, err := accounts.NewSecretBox(encryptionKey[0])
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("connect %s database: %w", dialect, err)
+	}
+	s := &Storage{db: db, dialect: dialect}
+	if options.EncryptionKey != "" {
+		box, err := accounts.NewSecretBox(options.EncryptionKey)
 		if err != nil {
 			_ = db.Close()
-			return nil, fmt.Errorf("invalid Accurate encryption key")
+			return nil, errors.New("invalid Accurate encryption key")
 		}
 		s.secretBox = box
 	}
-	if err := s.migrate(); err != nil {
+	if err := runMigrations(db, dialect, dsn); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("failed to migrate tables: %w", err)
+		return nil, fmt.Errorf("migrate %s database: %w", dialect, err)
 	}
-
+	if dialect == "postgres" {
+		if err := importSQLiteIfEligible(context.Background(), db, options.SQLitePath); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("import SQLite database: %w", err)
+		}
+	}
 	if err := s.verifyAccurateEncryption(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -80,187 +116,15 @@ func New(dbPath string, encryptionKey ...string) (*Storage, error) {
 }
 
 // DB returns the underlying sql.DB connection.
-func (s *Storage) DB() *sql.DB {
-	return s.db
-}
+func (s *Storage) DB() *sql.DB { return s.db }
+
+// IsPostgres reports whether this storage uses PostgreSQL.
+func (s *Storage) IsPostgres() bool { return s.dialect == "postgres" }
 
 // Close closes the database handle.
 func (s *Storage) Close() error {
 	if s.db != nil {
 		return s.db.Close()
-	}
-	return nil
-}
-
-func (s *Storage) migrate() error {
-	schema := `
-	CREATE TABLE IF NOT EXISTS users (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		email TEXT NOT NULL UNIQUE COLLATE NOCASE,
-		name TEXT NOT NULL DEFAULT '',
-		picture TEXT NOT NULL DEFAULT '',
-		role TEXT NOT NULL DEFAULT 'guest',
-		locale TEXT NOT NULL DEFAULT 'id',
-		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-	);
-	CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
-
-	CREATE TABLE IF NOT EXISTS accurate_session (
-		id               INTEGER PRIMARY KEY CHECK (id = 1),
-		provider         TEXT NOT NULL DEFAULT 'web',
-		email            TEXT NOT NULL DEFAULT '',
-		device_id        TEXT NOT NULL DEFAULT '',
-		cookies          TEXT NOT NULL DEFAULT '[]',
-		tenant           TEXT NOT NULL DEFAULT '',
-		official_session TEXT NOT NULL DEFAULT ''
-	);
-
-	CREATE TABLE IF NOT EXISTS accurate_accounts (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-		provider TEXT NOT NULL DEFAULT 'web',
-		enabled INTEGER NOT NULL DEFAULT 1,
-		email TEXT NOT NULL DEFAULT '',
-		password_encrypted TEXT NOT NULL DEFAULT '',
-		api_token_encrypted TEXT NOT NULL DEFAULT '',
-		signature_secret_encrypted TEXT NOT NULL DEFAULT '',
-		device_id TEXT NOT NULL DEFAULT '',
-		cookies TEXT NOT NULL DEFAULT '[]',
-		tenant TEXT NOT NULL DEFAULT '',
-		official_session TEXT NOT NULL DEFAULT '',
-		is_default INTEGER NOT NULL DEFAULT 0,
-		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-	);
-	CREATE UNIQUE INDEX IF NOT EXISTS idx_accurate_accounts_default ON accurate_accounts(is_default) WHERE is_default = 1;
-	CREATE TABLE IF NOT EXISTS page_designs (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL,
-		paper TEXT NOT NULL DEFAULT 'A4',
-		paper_width_mm REAL NOT NULL DEFAULT 210,
-		paper_height_mm REAL NOT NULL DEFAULT 297,
-		label_width_mm REAL NOT NULL,
-		label_height_mm REAL NOT NULL,
-		cols INTEGER NOT NULL DEFAULT 1,
-		rows INTEGER NOT NULL DEFAULT 1,
-		gap_x_mm REAL NOT NULL DEFAULT 0,
-		gap_y_mm REAL NOT NULL DEFAULT 0,
-		margin_top_mm REAL NOT NULL DEFAULT 0,
-		margin_left_mm REAL NOT NULL DEFAULT 0,
-		is_audit_sheet INTEGER NOT NULL DEFAULT 0,
-		label_layout TEXT DEFAULT NULL,
-		settings_json TEXT NOT NULL DEFAULT '{}',
-		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS label_layout_presets (
-		id INTEGER PRIMARY KEY AUTOINCREMENT,
-		name TEXT NOT NULL UNIQUE COLLATE NOCASE,
-		label_layout TEXT NOT NULL,
-		created_at DATETIME NOT NULL DEFAULT (datetime('now')),
-		updated_at DATETIME NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS roles (
-		id          INTEGER PRIMARY KEY AUTOINCREMENT,
-		name        TEXT NOT NULL UNIQUE COLLATE NOCASE,
-		description TEXT NOT NULL DEFAULT '',
-		is_system   INTEGER NOT NULL DEFAULT 0,
-		created_at  DATETIME NOT NULL DEFAULT (datetime('now')),
-		updated_at  DATETIME NOT NULL DEFAULT (datetime('now'))
-	);
-
-	CREATE TABLE IF NOT EXISTS role_permissions (
-		role_id    INTEGER NOT NULL REFERENCES roles(id) ON DELETE CASCADE,
-		permission TEXT NOT NULL,
-		PRIMARY KEY (role_id, permission)
-	);
-	CREATE TABLE IF NOT EXISTS migration_markers (name TEXT PRIMARY KEY, applied_at DATETIME NOT NULL DEFAULT (datetime('now')));
-	`
-	if _, err := s.db.Exec(schema); err != nil {
-		return err
-	}
-
-	_, _ = s.db.Exec(`ALTER TABLE page_designs ADD COLUMN label_layout TEXT DEFAULT NULL;`)
-	_, _ = s.db.Exec(`ALTER TABLE page_designs ADD COLUMN settings_json TEXT NOT NULL DEFAULT '{}';`)
-	_, _ = s.db.Exec(`ALTER TABLE users ADD COLUMN locale TEXT NOT NULL DEFAULT 'id';`)
-
-	// Seed system roles (idempotent)
-	systemRoles := []struct{ name, desc string }{
-		{"guest", "Newly registered, pending approval"},
-		{"user", "Standard warehouse operator"},
-		{"admin", "Full access including user and role management"},
-		{"superadmin", "Unrestricted system access (env-configured)"},
-	}
-	for _, r := range systemRoles {
-		if _, err := s.db.Exec(`INSERT OR IGNORE INTO roles (name, description, is_system) VALUES (?, ?, 1)`, r.name, r.desc); err != nil {
-			return fmt.Errorf("failed to seed system role %s: %w", r.name, err)
-		}
-	}
-
-	// Seed default permissions for user and admin roles
-	userPerms := []string{
-		string(model.PermDesignRead),
-		string(model.PermPresetRead),
-		string(model.PermAccurateRead),
-		string(model.PermAccurateCreate),
-		string(model.PermAccurateUpdate),
-		string(model.PermAccurateDelete),
-		string(model.PermSystemRead),
-	}
-	adminPerms := make([]string, len(model.AllPermissions))
-	for i, p := range model.AllPermissions {
-		adminPerms[i] = string(p)
-	}
-
-	rolePermSeeds := []struct {
-		roleName string
-		perms    []string
-	}{
-		{"user", userPerms},
-		{"admin", adminPerms},
-	}
-
-	for _, seed := range rolePermSeeds {
-		var roleID int64
-		err := s.db.QueryRow(`SELECT id FROM roles WHERE name = ? COLLATE NOCASE`, seed.roleName).Scan(&roleID)
-		if err != nil {
-			return fmt.Errorf("failed to query role id for %s: %w", seed.roleName, err)
-		}
-
-		var count int
-		err = s.db.QueryRow(`SELECT COUNT(*) FROM role_permissions WHERE role_id = ?`, roleID).Scan(&count)
-		if err != nil {
-			return fmt.Errorf("failed to check role permissions for %s: %w", seed.roleName, err)
-		}
-
-		if count == 0 {
-			tx, err := s.db.Begin()
-			if err != nil {
-				return fmt.Errorf("failed to start tx for seeding role permissions: %w", err)
-			}
-			stmt, err := tx.Prepare(`INSERT OR IGNORE INTO role_permissions (role_id, permission) VALUES (?, ?)`)
-			if err != nil {
-				_ = tx.Rollback()
-				return fmt.Errorf("failed to prepare role permission insert: %w", err)
-			}
-			for _, p := range seed.perms {
-				if _, err := stmt.Exec(roleID, p); err != nil {
-					_ = stmt.Close()
-					_ = tx.Rollback()
-					return fmt.Errorf("failed to insert role permission %s for %s: %w", p, seed.roleName, err)
-				}
-			}
-			_ = stmt.Close()
-			if err := tx.Commit(); err != nil {
-				return fmt.Errorf("failed to commit role permissions for %s: %w", seed.roleName, err)
-			}
-		}
-	}
-	if err := s.grantAccurateAccountPermissionsOnce(); err != nil {
-		return err
 	}
 	return nil
 }
@@ -293,12 +157,15 @@ func (s *Storage) UpsertUser(ctx context.Context, email, name, picture string) (
 	query := `
 		INSERT INTO users (email, name, picture, role, created_at, updated_at)
 		VALUES (?, ?, ?, 'guest', ?, ?)
-		ON CONFLICT(email) DO UPDATE SET
+		ON CONFLICT DO UPDATE SET
 			name = excluded.name,
 			picture = excluded.picture,
 			updated_at = excluded.updated_at
 	`
-	if _, err := s.db.ExecContext(ctx, query, trimmedEmail, trimmedName, trimmedPicture, now, now); err != nil {
+	if s.dialect == "postgres" {
+		query = strings.Replace(query, "ON CONFLICT DO UPDATE", "ON CONFLICT (lower(email)) DO UPDATE", 1)
+	}
+	if _, err := s.db.ExecContext(ctx, s.rebind(query), trimmedEmail, trimmedName, trimmedPicture, now, now); err != nil {
 		return nil, fmt.Errorf("failed to upsert user: %w", err)
 	}
 	return s.GetUserByEmail(ctx, trimmedEmail)
@@ -310,11 +177,11 @@ func (s *Storage) GetUserByEmail(ctx context.Context, email string) (*model.User
 	if trimmedEmail == "" {
 		return nil, nil
 	}
-	row := s.db.QueryRowContext(ctx, `
+	row := s.db.QueryRowContext(ctx, s.rebind(`
 		SELECT id, email, name, picture, role, locale, created_at, updated_at
 		FROM users
-		WHERE email = ? COLLATE NOCASE
-	`, trimmedEmail)
+		WHERE lower(email) = lower(?)
+	`), trimmedEmail)
 
 	var u model.User
 	if err := row.Scan(&u.ID, &u.Email, &u.Name, &u.Picture, &u.Role, &u.Locale, &u.CreatedAt, &u.UpdatedAt); err != nil {
@@ -377,7 +244,7 @@ func (s *Storage) SetUserRole(ctx context.Context, email, role string) error {
 		return fmt.Errorf("role %q does not exist", role)
 	}
 	now := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET role = ?, updated_at = ? WHERE email = ? COLLATE NOCASE`, trimmedRole, now, trimmedEmail)
+	res, err := s.db.ExecContext(ctx, s.rebind(`UPDATE users SET role = ?, updated_at = ? WHERE lower(email) = lower(?)`), trimmedRole, now, trimmedEmail)
 	if err != nil {
 		return fmt.Errorf("failed to update user role: %w", err)
 	}
@@ -402,7 +269,7 @@ func (s *Storage) UpdateUserLocale(ctx context.Context, email, locale string) er
 		return fmt.Errorf("invalid locale %q: must be en or id", locale)
 	}
 	now := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx, `UPDATE users SET locale = ?, updated_at = ? WHERE email = ? COLLATE NOCASE`, trimmedLocale, now, trimmedEmail)
+	res, err := s.db.ExecContext(ctx, s.rebind(`UPDATE users SET locale = ?, updated_at = ? WHERE lower(email) = lower(?)`), trimmedLocale, now, trimmedEmail)
 	if err != nil {
 		return fmt.Errorf("failed to update user locale: %w", err)
 	}
@@ -422,8 +289,8 @@ func (s *Storage) DeleteUser(ctx context.Context, email string) error {
 	if trimmedEmail == "" {
 		return fmt.Errorf("email cannot be empty")
 	}
-	query := `DELETE FROM users WHERE email = ? COLLATE NOCASE`
-	if _, err := s.db.ExecContext(ctx, query, trimmedEmail); err != nil {
+	query := `DELETE FROM users WHERE lower(email) = lower(?)`
+	if _, err := s.db.ExecContext(ctx, s.rebind(query), trimmedEmail); err != nil {
 		return fmt.Errorf("failed to delete user: %w", err)
 	}
 	return nil
@@ -434,7 +301,7 @@ func (s *Storage) GetLabelLayoutPresets(ctx context.Context) ([]model.LabelLayou
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id, name, label_layout, created_at, updated_at
 		FROM label_layout_presets
-		ORDER BY name COLLATE NOCASE
+		ORDER BY lower(name)
 	`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query label layout presets: %w", err)
@@ -457,27 +324,21 @@ func (s *Storage) GetLabelLayoutPresets(ctx context.Context) ([]model.LabelLayou
 
 // CreateLabelLayoutPreset creates a reusable label element arrangement.
 func (s *Storage) CreateLabelLayoutPreset(ctx context.Context, preset model.LabelLayoutPreset) (int64, error) {
-	result, err := s.db.ExecContext(ctx,
-		`INSERT INTO label_layout_presets (name, label_layout) VALUES (?, ?)`,
-		preset.Name, preset.LabelLayout,
-	)
+	var id int64
+	err := s.db.QueryRowContext(ctx, s.rebind(`INSERT INTO label_layout_presets (name, label_layout) VALUES (?, ?) RETURNING id`), preset.Name, preset.LabelLayout).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert label layout preset: %w", err)
-	}
-	id, err := result.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get label layout preset ID: %w", err)
 	}
 	return id, nil
 }
 
 // UpdateLabelLayoutPreset updates an existing reusable label element arrangement.
 func (s *Storage) UpdateLabelLayoutPreset(ctx context.Context, id int64, preset model.LabelLayoutPreset) error {
-	result, err := s.db.ExecContext(ctx, `
+	result, err := s.db.ExecContext(ctx, s.rebind(`
 		UPDATE label_layout_presets
-		SET name = ?, label_layout = ?, updated_at = datetime('now')
+		SET name = ?, label_layout = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE id = ?
-	`, preset.Name, preset.LabelLayout, id)
+	`), preset.Name, preset.LabelLayout, id)
 	if err != nil {
 		return fmt.Errorf("failed to update label layout preset %d: %w", id, err)
 	}
@@ -493,7 +354,7 @@ func (s *Storage) UpdateLabelLayoutPreset(ctx context.Context, id int64, preset 
 
 // DeleteLabelLayoutPreset deletes a reusable label element arrangement.
 func (s *Storage) DeleteLabelLayoutPreset(ctx context.Context, id int64) error {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM label_layout_presets WHERE id = ?`, id)
+	result, err := s.db.ExecContext(ctx, s.rebind(`DELETE FROM label_layout_presets WHERE id = ?`), id)
 	if err != nil {
 		return fmt.Errorf("failed to delete label layout preset %d: %w", id, err)
 	}
@@ -567,7 +428,7 @@ func (s *Storage) GetPageDesigns(ctx context.Context) ([]model.PageDesign, error
                gap_x_mm, gap_y_mm, margin_top_mm, margin_left_mm,
                is_audit_sheet, label_layout, settings_json, created_at, updated_at
         FROM page_designs
-        ORDER BY name COLLATE NOCASE
+		ORDER BY lower(name)
     `
 	rows, err := s.db.QueryContext(ctx, query)
 	if err != nil {
@@ -618,7 +479,7 @@ func (s *Storage) GetPageDesignByID(ctx context.Context, id int64) (*model.PageD
         FROM page_designs
         WHERE id = ?
     `
-	row := s.db.QueryRowContext(ctx, query, id)
+	row := s.db.QueryRowContext(ctx, s.rebind(query), id)
 	var d model.PageDesign
 	var isAuditSheetInt int
 	var labelLayout sql.NullString
@@ -664,18 +525,13 @@ func (s *Storage) CreatePageDesign(ctx context.Context, d model.PageDesign) (int
 	if err != nil {
 		return 0, err
 	}
-	res, err := s.db.ExecContext(ctx, query,
-		d.Name, d.Paper, d.PaperWidthMM, d.PaperHeightMM,
+	var id int64
+	err = s.db.QueryRowContext(ctx, s.rebind(query+" RETURNING id"), d.Name, d.Paper, d.PaperWidthMM, d.PaperHeightMM,
 		d.LabelWidthMM, d.LabelHeightMM, d.Cols, d.Rows,
 		d.GapXMM, d.GapYMM, d.MarginTopMM, d.MarginLeftMM,
-		isAuditSheetInt, d.LabelLayout, settingsJSON,
-	)
+		isAuditSheetInt, d.LabelLayout, settingsJSON).Scan(&id)
 	if err != nil {
 		return 0, fmt.Errorf("failed to insert page design: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get page design insert id: %w", err)
 	}
 	return id, nil
 }
@@ -687,7 +543,7 @@ func (s *Storage) UpdatePageDesign(ctx context.Context, id int64, d model.PageDe
             name = ?, paper = ?, paper_width_mm = ?, paper_height_mm = ?,
             label_width_mm = ?, label_height_mm = ?, cols = ?, rows = ?,
             gap_x_mm = ?, gap_y_mm = ?, margin_top_mm = ?, margin_left_mm = ?,
-            is_audit_sheet = ?, label_layout = ?, settings_json = ?, updated_at = datetime('now')
+			is_audit_sheet = ?, label_layout = ?, settings_json = ?, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?
     `
 	isAuditSheetInt := 0
@@ -698,12 +554,10 @@ func (s *Storage) UpdatePageDesign(ctx context.Context, id int64, d model.PageDe
 	if err != nil {
 		return err
 	}
-	res, err := s.db.ExecContext(ctx, query,
-		d.Name, d.Paper, d.PaperWidthMM, d.PaperHeightMM,
+	res, err := s.db.ExecContext(ctx, s.rebind(query), d.Name, d.Paper, d.PaperWidthMM, d.PaperHeightMM,
 		d.LabelWidthMM, d.LabelHeightMM, d.Cols, d.Rows,
 		d.GapXMM, d.GapYMM, d.MarginTopMM, d.MarginLeftMM,
-		isAuditSheetInt, d.LabelLayout, settingsJSON, id,
-	)
+		isAuditSheetInt, d.LabelLayout, settingsJSON, id)
 	if err != nil {
 		return fmt.Errorf("failed to update page design %d: %w", id, err)
 	}
@@ -720,7 +574,7 @@ func (s *Storage) UpdatePageDesign(ctx context.Context, id int64, d model.PageDe
 // DeletePageDesign deletes a page design by ID. Returns ErrNotFound if the row does not exist.
 func (s *Storage) DeletePageDesign(ctx context.Context, id int64) error {
 	query := `DELETE FROM page_designs WHERE id = ?`
-	res, err := s.db.ExecContext(ctx, query, id)
+	res, err := s.db.ExecContext(ctx, s.rebind(query), id)
 	if err != nil {
 		return fmt.Errorf("failed to delete page design %d: %w", id, err)
 	}
@@ -741,7 +595,7 @@ func (s *Storage) RoleExists(ctx context.Context, name string) (bool, error) {
 		return false, nil
 	}
 	var exists int
-	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM roles WHERE name = ? COLLATE NOCASE LIMIT 1`, trimmed).Scan(&exists)
+	err := s.db.QueryRowContext(ctx, s.rebind(`SELECT 1 FROM roles WHERE lower(name) = lower(?) LIMIT 1`), trimmed).Scan(&exists)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return false, nil
@@ -758,7 +612,7 @@ func (s *Storage) CountUsersWithRole(ctx context.Context, roleName string) (int,
 		return 0, nil
 	}
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM users WHERE role = ? COLLATE NOCASE`, trimmed).Scan(&count)
+	err := s.db.QueryRowContext(ctx, s.rebind(`SELECT COUNT(*) FROM users WHERE lower(role) = lower(?)`), trimmed).Scan(&count)
 	if err != nil {
 		return 0, fmt.Errorf("failed to count users with role %s: %w", roleName, err)
 	}
@@ -823,7 +677,7 @@ func (s *Storage) GetRoles(ctx context.Context) ([]model.Role, error) {
 func (s *Storage) GetRoleByID(ctx context.Context, id int64) (*model.Role, error) {
 	var r model.Role
 	var isSystem int
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE id = ?`, id).
+	err := s.db.QueryRowContext(ctx, s.rebind(`SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE id = ?`), id).
 		Scan(&r.ID, &r.Name, &r.Description, &isSystem, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -848,7 +702,7 @@ func (s *Storage) GetRoleByName(ctx context.Context, name string) (*model.Role, 
 	}
 	var r model.Role
 	var isSystem int
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE name = ? COLLATE NOCASE`, trimmed).
+	err := s.db.QueryRowContext(ctx, s.rebind(`SELECT id, name, description, is_system, created_at, updated_at FROM roles WHERE lower(name) = lower(?)`), trimmed).
 		Scan(&r.ID, &r.Name, &r.Description, &isSystem, &r.CreatedAt, &r.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -891,13 +745,10 @@ func (s *Storage) CreateRole(ctx context.Context, name, description string) (*mo
 	}
 
 	now := time.Now().UTC()
-	res, err := s.db.ExecContext(ctx, `INSERT INTO roles (name, description, is_system, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`, trimmedName, strings.TrimSpace(description), now, now)
+	var id int64
+	err = s.db.QueryRowContext(ctx, s.rebind(`INSERT INTO roles (name, description, is_system, created_at, updated_at) VALUES (?, ?, 0, ?, ?) RETURNING id`), trimmedName, strings.TrimSpace(description), now, now).Scan(&id)
 	if err != nil {
 		return nil, fmt.Errorf("failed to insert role: %w", err)
-	}
-	id, err := res.LastInsertId()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get last insert id: %w", err)
 	}
 	return s.GetRoleByID(ctx, id)
 }
@@ -919,7 +770,7 @@ func (s *Storage) UpdateRole(ctx context.Context, id int64, name, description st
 			return fmt.Errorf("cannot rename system role %q: %w", r.Name, ErrSystemRole)
 		}
 		now := time.Now().UTC()
-		_, err := s.db.ExecContext(ctx, `UPDATE roles SET description = ?, updated_at = ? WHERE id = ?`, trimmedDesc, now, id)
+		_, err := s.db.ExecContext(ctx, s.rebind(`UPDATE roles SET description = ?, updated_at = ? WHERE id = ?`), trimmedDesc, now, id)
 		if err != nil {
 			return fmt.Errorf("failed to update system role description: %w", err)
 		}
@@ -948,7 +799,7 @@ func (s *Storage) UpdateRole(ctx context.Context, id int64, name, description st
 	}
 
 	now := time.Now().UTC()
-	_, err = s.db.ExecContext(ctx, `UPDATE roles SET name = ?, description = ?, updated_at = ? WHERE id = ?`, trimmedName, trimmedDesc, now, id)
+	_, err = s.db.ExecContext(ctx, s.rebind(`UPDATE roles SET name = ?, description = ?, updated_at = ? WHERE id = ?`), trimmedName, trimmedDesc, now, id)
 	if err != nil {
 		return fmt.Errorf("failed to update role: %w", err)
 	}
@@ -971,7 +822,7 @@ func (s *Storage) DeleteRole(ctx context.Context, id int64) error {
 	if userCount > 0 {
 		return fmt.Errorf("%d user(s) currently assigned to role %q: %w", userCount, r.Name, ErrRoleInUse)
 	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM roles WHERE id = ?`, id)
+	res, err := s.db.ExecContext(ctx, s.rebind(`DELETE FROM roles WHERE id = ?`), id)
 	if err != nil {
 		return fmt.Errorf("failed to delete role: %w", err)
 	}
@@ -987,7 +838,7 @@ func (s *Storage) DeleteRole(ctx context.Context, id int64) error {
 
 // GetRolePermissions returns all permissions configured for a role ID.
 func (s *Storage) GetRolePermissions(ctx context.Context, roleID int64) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT permission FROM role_permissions WHERE role_id = ? ORDER BY permission ASC`, roleID)
+	rows, err := s.db.QueryContext(ctx, s.rebind(`SELECT permission FROM role_permissions WHERE role_id = ? ORDER BY permission ASC`), roleID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query role permissions for role %d: %w", roleID, err)
 	}
@@ -1043,12 +894,12 @@ func (s *Storage) SetRolePermissions(ctx context.Context, roleID int64, permissi
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.ExecContext(ctx, `DELETE FROM role_permissions WHERE role_id = ?`, roleID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.rebind(`DELETE FROM role_permissions WHERE role_id = ?`), roleID); err != nil {
 		return fmt.Errorf("failed to delete existing permissions: %w", err)
 	}
 
 	if len(deduped) > 0 {
-		stmt, err := tx.PrepareContext(ctx, `INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)`)
+		stmt, err := tx.PrepareContext(ctx, s.rebind(`INSERT INTO role_permissions (role_id, permission) VALUES (?, ?)`))
 		if err != nil {
 			return fmt.Errorf("failed to prepare permission insert: %w", err)
 		}
@@ -1062,7 +913,7 @@ func (s *Storage) SetRolePermissions(ctx context.Context, roleID int64, permissi
 	}
 
 	now := time.Now().UTC()
-	if _, err := tx.ExecContext(ctx, `UPDATE roles SET updated_at = ? WHERE id = ?`, now, roleID); err != nil {
+	if _, err := tx.ExecContext(ctx, s.rebind(`UPDATE roles SET updated_at = ? WHERE id = ?`), now, roleID); err != nil {
 		return fmt.Errorf("failed to update role updated_at: %w", err)
 	}
 
@@ -1086,13 +937,13 @@ func (s *Storage) GetPermissionsByRoleName(ctx context.Context, roleName string)
 		return nil, ErrNotFound
 	}
 
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.db.QueryContext(ctx, s.rebind(`
 		SELECT p.permission
 		FROM role_permissions p
 		JOIN roles r ON r.id = p.role_id
-		WHERE r.name = ? COLLATE NOCASE
+		WHERE lower(r.name) = lower(?)
 		ORDER BY p.permission ASC
-	`, trimmed)
+	`), trimmed)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query permissions for role %s: %w", trimmed, err)
 	}
@@ -1113,33 +964,4 @@ func (s *Storage) GetPermissionsByRoleName(ctx context.Context, roleName string)
 		perms = []string{}
 	}
 	return perms, nil
-}
-
-func (s *Storage) grantAccurateAccountPermissionsOnce() error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	var applied int
-	err = tx.QueryRow(`SELECT COUNT(*) FROM migration_markers WHERE name='accurate_account_permissions_v1'`).Scan(&applied)
-	if err != nil {
-		return err
-	}
-	if applied != 0 {
-		return nil
-	}
-	var adminID int64
-	if err := tx.QueryRow(`SELECT id FROM roles WHERE name='admin' COLLATE NOCASE`).Scan(&adminID); err != nil {
-		return err
-	}
-	for _, p := range []model.Permission{model.PermAccurateAccountRead, model.PermAccurateAccountCreate, model.PermAccurateAccountUpdate, model.PermAccurateAccountDelete} {
-		if _, err := tx.Exec(`INSERT OR IGNORE INTO role_permissions(role_id,permission) VALUES(?,?)`, adminID, string(p)); err != nil {
-			return err
-		}
-	}
-	if _, err := tx.Exec(`INSERT INTO migration_markers(name) VALUES('accurate_account_permissions_v1')`); err != nil {
-		return err
-	}
-	return tx.Commit()
 }

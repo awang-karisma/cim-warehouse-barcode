@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 	"time"
 
@@ -26,17 +25,9 @@ func main() {
 		log.Fatalf("failed to load configuration: %v", err)
 	}
 
-	// 2. Ensure DB directory exists and initialize SQLite storage
-	dbDir := filepath.Dir(cfg.DBPath)
-	if dbDir != "" && dbDir != "." {
-		if err := os.MkdirAll(dbDir, 0755); err != nil {
-			log.Fatalf("failed to create database directory %s: %v", dbDir, err)
-		}
-	}
-
-	store, err := storage.New(cfg.DBPath, cfg.AccurateEncryptionKey)
+	store, err := storage.New(storage.Options{SQLitePath: cfg.DBPath, DatabaseURL: cfg.DatabaseURL, EncryptionKey: cfg.AccurateEncryptionKey})
 	if err != nil {
-		log.Fatalf("failed to initialize database at %s: %v", cfg.DBPath, err)
+		log.Fatalf("failed to initialize database: %v", err)
 	}
 	defer store.Close()
 

@@ -40,6 +40,10 @@ import {
   IconFileText,
   IconInfoCircle,
   IconLoader2,
+  IconPencil,
+  IconPlugConnected,
+  IconPlugConnectedX,
+  IconTrash,
 } from '@tabler/icons-solidjs';
 
 export const AccurateAccount: Component = () => {
@@ -195,6 +199,15 @@ export const AccurateAccount: Component = () => {
 			else if (errorFor(accountID)) setActionError(errorFor(accountID));
 		} finally { if (generation === accountViewGeneration) setAccountSessionLoading(false); }
 	};
+	const toggleAccountSession = async (account: AccurateAccountDTO) => {
+		setSelectedAccountID(account.id);
+		setAccountDetailStatus({ enabled: account.enabled, connected: account.connected, accountId: account.id, accountName: account.name, database: account.database });
+		if (account.connected) {
+			await disconnectSelectedAccount();
+			return;
+		}
+		await connectSelectedAccount();
+	};
 	const [sources] = createResource(
 		() => accountDetailStatus().connected&&auth.hasPermission('accurate:read')?(selectedAccountID()??0):0,
 		async(accountID)=>{if(!accountID)return[];try{return await api.getAccurateSources(accountID);}catch(err){if(selectedAccountID()===accountID)setActionError(err instanceof Error?err.message:t('common.unknownError'));return[];}}
@@ -252,7 +265,7 @@ export const AccurateAccount: Component = () => {
 									<div><button type="button" class="font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void inspectAccount(account.id)}>{account.name}</button><div class="text-xs text-muted-foreground break-all">{account.email}</div></div>
 									<div class="flex flex-wrap items-center gap-2"><Badge variant="outline">{account.provider === 'web' ? t('accurate.providerWeb') : t('accurate.providerOfficial')}</Badge><Badge variant={account.enabled ? 'default' : 'secondary'}>{account.enabled ? t('accurate.enabled') : t('accurate.disabled')}</Badge><Show when={account.is_default}><Badge variant="outline">{t('accurate.activeWorkstationAccount')}</Badge></Show></div>
 									<p class="text-sm text-muted-foreground">{account.connected ? account.database?.alias || t('accurate.connected') : t('accurate.disconnected')}</p>
-									<div class="flex flex-wrap gap-2"><Show when={auth.hasPermission('accurate_account:update')}><Button size="sm" variant="outline" onClick={() => openAccountDialog(account)}>{t('common.edit')}</Button><Button size="sm" variant="outline" disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id} onClick={() => void activateAccount(account)}>{t('accurate.useAccount')}</Button></Show><Show when={auth.hasPermission('accurate_account:delete')}><Button size="sm" variant="destructive" onClick={() => setDeletingAccount(account)}>{t('accurate.deleteAccount')}</Button></Show></div>
+									<div class="flex flex-wrap gap-2"><Show when={auth.hasPermission(account.connected ? 'accurate:delete' : 'accurate:create')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')} disabled={!account.enabled || accountSessionLoading()} onClick={() => void toggleAccountSession(account)}><Show when={account.connected} fallback={<IconPlugConnected class="size-4" />}><IconPlugConnectedX class="size-4" /></Show></TooltipTrigger><TooltipContent>{account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')}</TooltipContent></Tooltip></Show><Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('common.edit')} onClick={() => openAccountDialog(account)}><IconPencil class="size-4" /></TooltipTrigger><TooltipContent>{t('common.edit')}</TooltipContent></Tooltip><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('accurate.useAccount')} disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id} onClick={() => void activateAccount(account)}><IconCheck class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.useAccount')}</TooltipContent></Tooltip></Show><Show when={auth.hasPermission('accurate_account:delete')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="destructive" aria-label={t('accurate.deleteAccount')} onClick={() => setDeletingAccount(account)}><IconTrash class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.deleteAccount')}</TooltipContent></Tooltip></Show></div>
 								</div>}</For>
 							</div>
 							<div class="hidden sm:block">
@@ -265,9 +278,10 @@ export const AccurateAccount: Component = () => {
 										<TableCell><Badge variant={account.enabled ? 'default' : 'secondary'}>{account.enabled ? t('accurate.enabled') : t('accurate.disabled')}</Badge></TableCell>
 										<TableCell>{account.connected ? account.database?.alias || t('accurate.connected') : t('accurate.disconnected')}{account.is_default && <Badge class="ml-2" variant="outline">{t('accurate.activeWorkstationAccount')}</Badge>}</TableCell>
 										<TableCell class="text-right"><div class="flex justify-end gap-2">
-											<Show when={auth.hasPermission('accurate_account:update')}><Button size="sm" variant="outline" onClick={() => openAccountDialog(account)}>{t('common.edit')}</Button></Show>
-											<Show when={auth.hasPermission('accurate_account:update')}><Button size="sm" variant="outline" disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id} onClick={() => void activateAccount(account)}>{accountMutationID() === account.id ? t('common.loading') : t('accurate.useAccount')}</Button></Show>
-											<Show when={auth.hasPermission('accurate_account:delete')}><Button size="sm" variant="destructive" onClick={() => setDeletingAccount(account)}>{t('accurate.deleteAccount')}</Button></Show>
+											<Show when={auth.hasPermission(account.connected ? 'accurate:delete' : 'accurate:create')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')} disabled={!account.enabled || accountSessionLoading()} onClick={() => void toggleAccountSession(account)}><Show when={account.connected} fallback={<IconPlugConnected class="size-4" />}><IconPlugConnectedX class="size-4" /></Show></TooltipTrigger><TooltipContent>{account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')}</TooltipContent></Tooltip></Show>
+											<Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('common.edit')} onClick={() => openAccountDialog(account)}><IconPencil class="size-4" /></TooltipTrigger><TooltipContent>{t('common.edit')}</TooltipContent></Tooltip></Show>
+											<Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('accurate.useAccount')} disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id} onClick={() => void activateAccount(account)}><IconCheck class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.useAccount')}</TooltipContent></Tooltip></Show>
+											<Show when={auth.hasPermission('accurate_account:delete')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="destructive" aria-label={t('accurate.deleteAccount')} onClick={() => setDeletingAccount(account)}><IconTrash class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.deleteAccount')}</TooltipContent></Tooltip></Show>
 										</div></TableCell>
 									</TableRow>}</For>
 								</TableBody>
@@ -277,26 +291,6 @@ export const AccurateAccount: Component = () => {
 					</Show>
 				</CardContent>
 			</Card>
-		</Show>
-		<Show when={selectedAccount()}>
-			{(account) => <Card class="border-border shadow-sm">
-				<CardHeader><CardTitle>{account().name}</CardTitle><CardDescription>{account().email} · {account().provider === 'web' ? t('accurate.providerWeb') : t('accurate.providerOfficial')}{account().is_default ? ` · ${t('accurate.activeWorkstationAccount')}` : ''}</CardDescription></CardHeader>
-				<CardContent class="space-y-4">
-					<Show when={!account().enabled} fallback={<>
-						<Show when={accountDetailStatus().accountId === account().id && accountDetailStatus().connected} fallback={<div class="space-y-3">
-						<Show when={auth.hasPermission('accurate:create')}><Button disabled={accountSessionLoading()} onClick={() => void connectSelectedAccount()}>{t('accurate.connectBtn')}</Button></Show>
-							<Show when={pendingChallengeFor(account().id)}><form class="flex flex-wrap items-end gap-2" onSubmit={(e) => { e.preventDefault(); void connectSelectedAccount(); }}><label class="grid gap-1 text-sm">{t('accurate.totpTitle')}<input inputmode="numeric" autocomplete="one-time-code" value={otp()} onInput={(e) => setOtp(e.currentTarget.value)} class="h-9 rounded-md border border-input bg-background px-3" /></label><Button type="submit" disabled={accountSessionLoading()}>{t('accurate.verifyContinue')}</Button></form></Show>
-							<Show when={auth.hasPermission('accurate:update') && accountDatabases().length > 0}><div class="flex flex-wrap items-center gap-2"><span class="text-sm">{t('accurate.selectDatabase')}</span><For each={accountDatabases()}>{(db) => <Button size="sm" variant="outline" disabled={accountSessionLoading()} onClick={() => void selectDatabaseForAccount(account().id, db.id)}>{db.alias || String(db.id)}</Button>}</For></div></Show>
-						</div>}>
-							<p class="text-sm text-muted-foreground">{t('accurate.connectedAs', { alias: accountDetailStatus().database?.alias || '' })}</p>
-							<Show when={auth.hasPermission('accurate:update') && accountDatabases().length > 1}><div class="flex flex-wrap gap-2"><For each={accountDatabases()}>{(db) => <Button size="sm" variant="outline" disabled={db.id === accountDetailStatus().database?.id || accountSessionLoading()} onClick={() => void selectDatabaseForAccount(account().id,db.id)}>{t('accurate.switchBtn')}: {db.alias || String(db.id)}</Button>}</For></div></Show>
-							<Show when={auth.hasPermission('accurate:delete')}><Button variant="outline" onClick={() => void disconnectSelectedAccount()} disabled={accountSessionLoading()}>{t('accurate.disconnectBtn')}</Button></Show>
-						</Show>
-					</>}>
-						<p class="text-sm text-muted-foreground">{t('accurate.disabled')}</p>
-					</Show>
-				</CardContent>
-			</Card>}
 		</Show>
 
 		<Dialog open={accountDialogOpen()} onOpenChange={setAccountDialogOpen}>

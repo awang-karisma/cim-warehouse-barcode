@@ -18,6 +18,7 @@ import (
 type Config struct {
 	Port                  string        `mapstructure:"server_port" json:"port"`
 	DBPath                string        `mapstructure:"db_path" json:"db_path"`
+	DatabaseURL           string        `mapstructure:"database_url" json:"-"`
 	GoogleClientID        string        `mapstructure:"google_client_id" json:"google_client_id"`
 	JWTSecret             string        `mapstructure:"jwt_secret" json:"jwt_secret"`
 	SuperadminEmails      string        `mapstructure:"superadmin_emails" json:"superadmin_emails"`
@@ -30,6 +31,7 @@ func DefaultConfig() Config {
 	return Config{
 		Port:                  "8080",
 		DBPath:                "data/barcode.db",
+		DatabaseURL:           "",
 		GoogleClientID:        "",
 		JWTSecret:             "",
 		SuperadminEmails:      "",
@@ -55,6 +57,7 @@ func Load(envFiles ...string) (*Config, error) {
 	defaults := DefaultConfig()
 	v.SetDefault("server_port", defaults.Port)
 	v.SetDefault("db_path", defaults.DBPath)
+	v.SetDefault("database_url", defaults.DatabaseURL)
 	v.SetDefault("google_client_id", defaults.GoogleClientID)
 	v.SetDefault("jwt_secret", defaults.JWTSecret)
 	v.SetDefault("superadmin_emails", defaults.SuperadminEmails)
@@ -63,6 +66,7 @@ func Load(envFiles ...string) (*Config, error) {
 	// Bind environment keys
 	_ = v.BindEnv("server_port", "SERVER_PORT", "PORT")
 	_ = v.BindEnv("db_path", "DB_PATH")
+	_ = v.BindEnv("database_url", "DATABASE_URL")
 	_ = v.BindEnv("google_client_id", "GOOGLE_CLIENT_ID")
 	_ = v.BindEnv("jwt_secret", "JWT_SECRET")
 	_ = v.BindEnv("superadmin_emails", "SUPERADMIN_EMAILS")
@@ -83,6 +87,11 @@ func Load(envFiles ...string) (*Config, error) {
 		}
 	} else {
 		cfg.RBACCacheTTL = 5 * time.Minute
+	}
+
+	cfg.DatabaseURL = strings.TrimSpace(cfg.DatabaseURL)
+	if cfg.DatabaseURL != "" && !strings.HasPrefix(strings.ToLower(cfg.DatabaseURL), "postgres://") && !strings.HasPrefix(strings.ToLower(cfg.DatabaseURL), "postgresql://") {
+		return nil, fmt.Errorf("DATABASE_URL must use postgres:// or postgresql://")
 	}
 
 	if cfg.JWTSecret == "" {

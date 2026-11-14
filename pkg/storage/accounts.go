@@ -35,11 +35,16 @@ func (s *Storage) CreateAccurateAccount(ctx context.Context, a AccurateAccount) 
 	if a.Password != "" || a.APIToken != "" || a.SignatureSecret != "" {
 		return 0, errors.New("plaintext Accurate credentials must not be stored")
 	}
-	r, e := s.db.ExecContext(ctx, `INSERT INTO accurate_accounts(name,provider,enabled,email,password_encrypted,api_token_encrypted,signature_secret_encrypted) VALUES(?,?,?,?,?,?,?)`, strings.TrimSpace(a.Name), a.Provider, a.Enabled, a.Email, a.Password, a.APIToken, a.SignatureSecret)
+	enabled := 0
+	if a.Enabled {
+		enabled = 1
+	}
+	var id int64
+	e := s.db.QueryRowContext(ctx, s.rebind(`INSERT INTO accurate_accounts(name,provider,enabled,email,password_encrypted,api_token_encrypted,signature_secret_encrypted) VALUES(?,?,?,?,?,?,?) RETURNING id`), strings.TrimSpace(a.Name), a.Provider, enabled, a.Email, a.Password, a.APIToken, a.SignatureSecret).Scan(&id)
 	if e != nil {
 		return 0, e
 	}
-	return r.LastInsertId()
+	return id, nil
 }
 func (s *Storage) CreateAccurateAccountSecure(ctx context.Context, a AccurateAccount, seal func(int64, string, string) (string, error)) (int64, error) {
 	tx, e := s.db.BeginTx(ctx, nil)
@@ -47,11 +52,12 @@ func (s *Storage) CreateAccurateAccountSecure(ctx context.Context, a AccurateAcc
 		return 0, e
 	}
 	defer tx.Rollback()
-	r, e := tx.ExecContext(ctx, `INSERT INTO accurate_accounts(name,provider,enabled,email) VALUES(?,?,?,?)`, strings.TrimSpace(a.Name), a.Provider, a.Enabled, a.Email)
-	if e != nil {
-		return 0, e
+	enabled := 0
+	if a.Enabled {
+		enabled = 1
 	}
-	id, e := r.LastInsertId()
+	var id int64
+	e = tx.QueryRowContext(ctx, s.rebind(`INSERT INTO accurate_accounts(name,provider,enabled,email) VALUES(?,?,?,?) RETURNING id`), strings.TrimSpace(a.Name), a.Provider, enabled, a.Email).Scan(&id)
 	if e != nil {
 		return 0, e
 	}
@@ -74,7 +80,7 @@ func (s *Storage) CreateAccurateAccountSecure(ctx context.Context, a AccurateAcc
 			return 0, e
 		}
 	}
-	if _, e = tx.ExecContext(ctx, `UPDATE accurate_accounts SET password_encrypted=?,api_token_encrypted=?,signature_secret_encrypted=? WHERE id=?`, p, t, ss, id); e != nil {
+	if _, e = tx.ExecContext(ctx, s.rebind(`UPDATE accurate_accounts SET password_encrypted=?,api_token_encrypted=?,signature_secret_encrypted=? WHERE id=?`), p, t, ss, id); e != nil {
 		return 0, e
 	}
 	return id, tx.Commit()
@@ -82,7 +88,8 @@ func (s *Storage) CreateAccurateAccountSecure(ctx context.Context, a AccurateAcc
 func scanAccurateAccount(r interface{ Scan(...any) error }) (*AccurateAccount, error) {
 	a := new(AccurateAccount)
 	var en, active int
-	e := r.Scan(&a.ID, &a.Name, &a.Provider, &en, &a.Email, &a.Password, &a.APIToken, &a.SignatureSecret, &a.DeviceID, &a.Cookies, &a.Tenant, &a.OfficialSession, &active, &a.CreatedAt, &a.UpdatedAt)
+	var createdAt, updatedAt timestampString
+	e := r.Scan(&a.ID, &a.Name, &a.Provider, &en, &a.Email, &a.Password, &a.APIToken, &a.SignatureSecret, &a.DeviceID, &a.Cookies, &a.Tenant, &a.OfficialSession, &active, &createdAt, &updatedAt)
 	if errors.Is(e, sql.ErrNoRows) {
 		return nil, ErrNotFound
 	}
@@ -91,13 +98,15 @@ func scanAccurateAccount(r interface{ Scan(...any) error }) (*AccurateAccount, e
 	}
 	a.Enabled = en != 0
 	a.IsDefault = active != 0
+	a.CreatedAt = createdAt.value
+	a.UpdatedAt = updatedAt.value
 	return a, nil
 }
 func (s *Storage) GetAccurateAccount(ctx context.Context, id int64) (*AccurateAccount, error) {
-	return scanAccurateAccount(s.db.QueryRowContext(ctx, `SELECT `+accountColumns+` FROM accurate_accounts WHERE id=?`, id))
+	return scanAccurateAccount(s.db.QueryRowContext(ctx, s.rebind(`SELECT `+accountColumns+` FROM accurate_accounts WHERE id=?`), id))
 }
 func (s *Storage) ListAccurateAccounts(ctx context.Context) ([]AccurateAccount, error) {
-	rs, e := s.db.QueryContext(ctx, `SELECT `+accountColumns+` FROM accurate_accounts ORDER BY name COLLATE NOCASE`)
+	rs, e := s.db.QueryContext(ctx, `SELECT `+accountColumns+` FROM accurate_accounts ORDER BY lower(name)`)
 	if e != nil {
 		return nil, e
 	}
@@ -125,7 +134,7 @@ func (s *Storage) updateAccurateAccount(ctx context.Context, a AccurateAccount, 
 	}
 	defer tx.Rollback()
 	clearDefault := !a.Enabled
-	res, e := tx.ExecContext(ctx, `UPDATE accurate_accounts SET name=?,enabled=?,email=?,password_encrypted=?,api_token_encrypted=?,signature_secret_encrypted=?,is_default=CASE WHEN ? THEN 0 ELSE is_default END,device_id=CASE WHEN ? THEN '' ELSE device_id END,cookies=CASE WHEN ? THEN '[]' ELSE cookies END,tenant=CASE WHEN ? THEN '' ELSE tenant END,official_session=CASE WHEN ? THEN '' ELSE official_session END,updated_at=datetime('now') WHERE id=?`, strings.TrimSpace(a.Name), a.Enabled, a.Email, a.Password, a.APIToken, a.SignatureSecret, clearDefault, clearSession, clearSession, clearSession, clearSession, a.ID)
+	res, e := tx.ExecContext(ctx, s.rebind(`UPDATE accurate_accounts SET name=?,enabled=?,email=?,password_encrypted=?,api_token_encrypted=?,signature_secret_encrypted=?,is_default=CASE WHEN ? THEN 0 ELSE is_default END,device_id=CASE WHEN ? THEN '' ELSE device_id END,cookies=CASE WHEN ? THEN '[]' ELSE cookies END,tenant=CASE WHEN ? THEN '' ELSE tenant END,official_session=CASE WHEN ? THEN '' ELSE official_session END,updated_at=CURRENT_TIMESTAMP WHERE id=?`), strings.TrimSpace(a.Name), a.Enabled, a.Email, a.Password, a.APIToken, a.SignatureSecret, clearDefault, clearSession, clearSession, clearSession, clearSession, a.ID)
 	if e != nil {
 		return e
 	}
@@ -136,7 +145,7 @@ func (s *Storage) updateAccurateAccount(ctx context.Context, a AccurateAccount, 
 	return tx.Commit()
 }
 func (s *Storage) DeleteAccurateAccount(ctx context.Context, id int64) error {
-	r, e := s.db.ExecContext(ctx, `DELETE FROM accurate_accounts WHERE id=?`, id)
+	r, e := s.db.ExecContext(ctx, s.rebind(`DELETE FROM accurate_accounts WHERE id=?`), id)
 	if e != nil {
 		return e
 	}
@@ -164,7 +173,7 @@ func (s *Storage) SetDefaultAccurateAccount(ctx context.Context, id int64) error
 	}
 	defer tx.Rollback()
 	var enabled int
-	if err = tx.QueryRowContext(ctx, `SELECT enabled FROM accurate_accounts WHERE id=?`, id).Scan(&enabled); errors.Is(err, sql.ErrNoRows) {
+	if err = tx.QueryRowContext(ctx, s.rebind(`SELECT enabled FROM accurate_accounts WHERE id=?`), id).Scan(&enabled); errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound
 	}
 	if err != nil {
@@ -176,7 +185,7 @@ func (s *Storage) SetDefaultAccurateAccount(ctx context.Context, id int64) error
 	if _, err = tx.ExecContext(ctx, `UPDATE accurate_accounts SET is_default=0 WHERE is_default=1`); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE accurate_accounts SET is_default=1,updated_at=datetime('now') WHERE id=?`, id); err != nil {
+	if _, err = tx.ExecContext(ctx, s.rebind(`UPDATE accurate_accounts SET is_default=1,updated_at=CURRENT_TIMESTAMP WHERE id=?`), id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -231,7 +240,7 @@ func (s *Storage) SaveAccurateSession(id int64, provider, email, device string, 
 			return e
 		}
 	}
-	r, e := s.db.Exec(`UPDATE accurate_accounts SET provider=?,email=?,device_id=?,cookies=?,tenant=?,official_session=? WHERE id=?`, provider, email, device, cookies, tj, oj, id)
+	r, e := s.db.Exec(s.rebind(`UPDATE accurate_accounts SET provider=?,email=?,device_id=?,cookies=?,tenant=?,official_session=? WHERE id=?`), provider, email, device, cookies, tj, oj, id)
 	if e != nil {
 		return e
 	}
@@ -243,7 +252,7 @@ func (s *Storage) SaveAccurateSession(id int64, provider, email, device string, 
 }
 func (s *Storage) LoadAccurateSession(id int64) (provider, email, device string, cookies []*accurate.Cookie, tenant *accurate.TenantSession, official *accurate.OfficialSessionState, err error) {
 	var cj, tj, oj string
-	err = s.db.QueryRow(`SELECT provider,email,device_id,cookies,tenant,official_session FROM accurate_accounts WHERE id=?`, id).Scan(&provider, &email, &device, &cj, &tj, &oj)
+	err = s.db.QueryRow(s.rebind(`SELECT provider,email,device_id,cookies,tenant,official_session FROM accurate_accounts WHERE id=?`), id).Scan(&provider, &email, &device, &cj, &tj, &oj)
 	if errors.Is(err, sql.ErrNoRows) {
 		err = ErrNotFound
 		return
@@ -295,11 +304,11 @@ func (s *Storage) LoadAccurateSession(id int64) (provider, email, device string,
 	return
 }
 func (s *Storage) ClearAccurateSession(id int64) error {
-	_, e := s.db.Exec(`UPDATE accurate_accounts SET device_id='',cookies='[]',tenant='',official_session='' WHERE id=?`, id)
+	_, e := s.db.Exec(s.rebind(`UPDATE accurate_accounts SET device_id='',cookies='[]',tenant='',official_session='' WHERE id=?`), id)
 	return e
 }
 func (s *Storage) UpdateAccurateSecrets(ctx context.Context, id int64, password, token, signature string) error {
-	_, e := s.db.ExecContext(ctx, `UPDATE accurate_accounts SET password_encrypted=?,api_token_encrypted=?,signature_secret_encrypted=?,updated_at=datetime('now') WHERE id=?`, password, token, signature, id)
+	_, e := s.db.ExecContext(ctx, s.rebind(`UPDATE accurate_accounts SET password_encrypted=?,api_token_encrypted=?,signature_secret_encrypted=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`), password, token, signature, id)
 	return e
 }
 func (s *Storage) verifyAccurateEncryption() error {

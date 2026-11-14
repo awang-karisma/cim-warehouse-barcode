@@ -121,7 +121,7 @@ func TestAccurateAccountPermissionsAreSeparate(t *testing.T) {
 }
 
 func TestAccurateAccountDuplicateNamesAreCaseInsensitive(t *testing.T) {
-	store, err := storage.New(filepath.Join(t.TempDir(), "dupe.db"), testAccountKey)
+	store, err := storage.New(storage.Options{SQLitePath: filepath.Join(t.TempDir(), "dupe.db"), EncryptionKey: testAccountKey})
 	if err != nil {
 		t.Fatal(err)
 	}
