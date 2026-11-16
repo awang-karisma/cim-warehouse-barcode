@@ -246,9 +246,12 @@ export const AccurateAccount: Component = () => {
 				if (errorFor(accountID)) setActionError(errorFor(accountID));
 				return;
 			}
+			// Re-read the refetched account so a first-time connect that made the
+			// account the workstation default (backend activation) shows online here.
+			const refreshedAccount = accountsResource()?.find((candidate) => candidate.id === accountID);
 			setOtp(''); setAccountDetailStatus(statusFor(accountID)); setAccountDatabases(databasesFor(accountID)); await refetchAccounts();
-			await refreshWorkstation(account?.is_default === true);
-			if (account?.provider === 'web' && !account.is_default) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'not_active' } }));
+			await refreshWorkstation(refreshedAccount?.is_default === true);
+			if (refreshedAccount?.provider === 'web' && !refreshedAccount.is_default) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'not_active' } }));
 		} catch (err) { if (generation === accountViewGeneration) setActionError(err instanceof Error ? err.message : t('common.unknownError')); }
 		finally { if (generation === accountViewGeneration) setAccountSessionLoading(false); }
 	};
@@ -256,10 +259,12 @@ export const AccurateAccount: Component = () => {
 		const generation = accountViewGeneration; setAccountSessionLoading(true);
 		try {
 			if (await handleSelectDatabase(databaseID, accountID) && generation === accountViewGeneration && selectedAccountID() === accountID) {
+				// Re-read the refetched account: a first-time connect may have become
+				// the workstation default (auto-activated by the backend).
+				const refreshedAccount = accountsResource()?.find((candidate) => candidate.id === accountID);
 				setAccountDetailStatus(statusFor(accountID)); setAccountDatabases(databasesFor(accountID)); await refetchAccounts();
-				const account = accountsResource()?.find((candidate) => candidate.id === accountID);
-				await refreshWorkstation(account?.is_default === true);
-				if (account?.provider === 'web' && !account.is_default) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'not_active' } }));
+				await refreshWorkstation(refreshedAccount?.is_default === true);
+				if (refreshedAccount?.provider === 'web' && !refreshedAccount.is_default) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'not_active' } }));
 			} else if (errorFor(accountID)) setActionError(errorFor(accountID));
 		} finally { if (generation === accountViewGeneration) setAccountSessionLoading(false); }
 	};

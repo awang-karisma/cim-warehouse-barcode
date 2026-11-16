@@ -425,12 +425,13 @@ type AccurateSelectDatabaseOutput struct {
 }
 
 func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *AccurateSelectDatabaseInput) (*AccurateSelectDatabaseOutput, error) {
+	var a *storage.AccurateAccount
 	if input != nil {
-		resolved, err := s.accountServerForRequest(ctx, accountIDParam(input.AccountID))
+		resolved, account, err := s.resolveAccurateAccount(ctx, accountIDParam(input.AccountID))
 		if err != nil {
 			return nil, err
 		}
-		s = resolved
+		s, a = resolved, account
 		defer s.releaseAccountOperation()
 	}
 	if err := s.checkAccurateEnabled(); err != nil {
@@ -493,6 +494,18 @@ func (s *Server) handleAccurateSelectDatabase(ctx context.Context, input *Accura
 		if err := s.accurateSession.SetOfficialSession(&accurate.OfficialSessionState{DatabaseID: openedDB.ID, Host: host, Database: openedDB}); err != nil {
 			return nil, huma.Error500InternalServerError("Failed to persist Accurate database session")
 		}
+	}
+
+	// The workstation status and barcode surfaces read the active/default
+	// account. Connecting the first usable account selects it automatically so
+	// every page agrees it is online; an existing default is never hijacked —
+	// switching remains an explicit activate call.
+	if _, err := s.store.GetDefaultAccurateAccount(ctx); errors.Is(err, storage.ErrNotFound) {
+		if err := s.store.SetDefaultAccurateAccount(ctx, a.ID); err != nil && !errors.Is(err, storage.ErrAccurateAccountNotConnected) && !errors.Is(err, storage.ErrAccurateAccountDisabled) {
+			return nil, huma.Error500InternalServerError("Failed to activate the first connected Accurate account")
+		}
+	} else if err != nil {
+		return nil, huma.Error500InternalServerError("Failed to read active Accurate account")
 	}
 
 	return &AccurateSelectDatabaseOutput{
