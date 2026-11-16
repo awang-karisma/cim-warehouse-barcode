@@ -11,6 +11,11 @@ import (
 	"strings"
 )
 
+var (
+	ErrAccurateAccountNotConnected = errors.New("account not connected")
+	ErrAccurateAccountDisabled     = errors.New("account disabled")
+)
+
 type AccurateAccount struct {
 	ID              int64  `json:"id"`
 	Name            string `json:"name"`
@@ -165,7 +170,7 @@ func (s *Storage) SetDefaultAccurateAccount(ctx context.Context, id int64) error
 	}
 	connected := provider == string(accurate.ProviderWeb) && tenant != nil && tenant.DSI != "" || provider == string(accurate.ProviderOfficial) && official != nil && official.Host != "" && official.Database.ID > 0
 	if !connected {
-		return errors.New("account not connected")
+		return ErrAccurateAccountNotConnected
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -180,7 +185,7 @@ func (s *Storage) SetDefaultAccurateAccount(ctx context.Context, id int64) error
 		return err
 	}
 	if enabled == 0 {
-		return errors.New("account disabled")
+		return ErrAccurateAccountDisabled
 	}
 	if _, err = tx.ExecContext(ctx, `UPDATE accurate_accounts SET is_default=0 WHERE is_default=1`); err != nil {
 		return err

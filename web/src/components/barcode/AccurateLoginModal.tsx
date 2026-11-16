@@ -2,6 +2,7 @@ import { type Component, createSignal, For, Show } from 'solid-js';
 import { useI18n } from '~/i18n';
 import {
 	activeAuthLoading,
+	activeAuthError,
 	activeDatabases,
 	activePendingChallengeId,
 	activeStatus,

@@ -1,6 +1,7 @@
 package accurate
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,11 +20,13 @@ const (
 )
 
 var (
-	ErrInvalidCredentials = errors.New("invalid email or password")
-	ErrMFARequired        = errors.New("mfa verification required")
-	ErrChallengeExpired   = errors.New("mfa challenge expired or invalid")
-	ErrChallengeUsed      = errors.New("mfa challenge has already been used")
-	ErrUntrustedHost      = errors.New("security error: untrusted host or non-HTTPS action")
+	ErrInvalidCredentials       = errors.New("invalid email or password")
+	ErrInvalidOTP               = errors.New("invalid verification code")
+	ErrMFARequired              = errors.New("mfa verification required")
+	ErrChallengeExpired         = errors.New("mfa challenge expired or invalid")
+	ErrChallengeUsed            = errors.New("mfa challenge has already been used")
+	ErrChallengeAccountMismatch = errors.New("mfa challenge belongs to a different account")
+	ErrUntrustedHost            = errors.New("security error: untrusted host or non-HTTPS action")
 )
 
 // DatabaseInfo represents a tenant database choice from Accurate.
@@ -97,7 +100,7 @@ func (s *ChallengeStore) Delete(id string) {
 func (s *ChallengeStore) Clear() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.challenges = make(map[string]*PendingChallenge)
+	clear(s.challenges)
 }
 
 func (s *ChallengeStore) cleanExpiredLocked() {
@@ -196,31 +199,50 @@ func (c *Client) Challenges() *ChallengeStore {
 	return c.challenges
 }
 
-// Login initiates the email/password login flow.
-func (c *Client) Login(ctx context.Context, email, password string) (*LoginResult, error) {
+// ResetAuthentication discards cookies, device identity and MFA challenges while
+// preserving the configured IdP host, transport and HTTP behavior.
+func (c *Client) ResetAuthentication() {
+	c.jar.LoadCookies(nil)
+	c.deviceID = ""
+	c.challenges.Clear()
+}
+
+// Login always initiates a fresh email/password flow. Only SubmitMFA continues
+// an existing challenge's cookies and device identity.
+func (c *Client) Login(ctx context.Context, email, password string) (result *LoginResult, err error) {
+	c.ResetAuthentication()
+	defer func() {
+		if err != nil {
+			c.ResetAuthentication()
+		}
+	}()
 	email = strings.TrimSpace(email)
 	if email == "" || password == "" {
-		return nil, ErrInvalidCredentials
+		return nil, &LoginError{Stage: LoginStagePreLogin, Err: ErrInvalidCredentials}
 	}
+	c.deviceID = GenerateDeviceID()
 
 	// 1. Initial page load to obtain IdP JSESSIONID
 	idpClient := c.idpRedirectClient()
 	initReq, err := http.NewRequestWithContext(ctx, "GET", c.idpHost+"/", nil)
 	if err != nil {
-		return nil, err
+		return nil, &LoginError{Stage: LoginStageInitialPage, Err: err}
 	}
 	initReq.Header.Set("User-Agent", UserAgent)
 	initRes, err := idpClient.Do(initReq)
 
 	if err != nil {
-		return nil, fmt.Errorf("failed to connect to Accurate IdP: %w", err)
+		return nil, &LoginError{Stage: LoginStageInitialPage, Err: err}
 	}
 	_ = initRes.Body.Close()
+	if initRes.StatusCode < 200 || initRes.StatusCode >= 300 {
+		return nil, &LoginError{Stage: LoginStageInitialPage, StatusCode: initRes.StatusCode}
+	}
 
 	// 2. Pre-login verification
 	preHashed, err := NucauthPre(password, c.deviceID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to encode pre-login payload: %w", err)
+		return nil, &LoginError{Stage: LoginStagePreLogin, Err: err}
 	}
 
 	preForm := url.Values{
@@ -230,7 +252,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (*LoginResul
 
 	preReq, err := http.NewRequestWithContext(ctx, "POST", c.idpHost+"/pre-login.do", strings.NewReader(preForm.Encode()))
 	if err != nil {
-		return nil, err
+		return nil, &LoginError{Stage: LoginStagePreLogin, Err: err}
 	}
 	preReq.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
 	preReq.Header.Set("X-Requested-With", "XMLHttpRequest")
@@ -240,7 +262,7 @@ func (c *Client) Login(ctx context.Context, email, password string) (*LoginResul
 
 	preRes, err := idpClient.Do(preReq)
 	if err != nil {
-		return nil, fmt.Errorf("pre-login request failed: %w", err)
+		return nil, &LoginError{Stage: LoginStagePreLogin, Err: err}
 	}
 	defer preRes.Body.Close()
 
@@ -250,19 +272,16 @@ func (c *Client) Login(ctx context.Context, email, password string) (*LoginResul
 			Valid       bool   `json:"valid"`
 			RequireTotp bool   `json:"requireTotp"`
 			Permit      string `json:"permit"`
-			ErrorMsg    string `json:"errorMsg"`
 		} `json:"d"`
 	}
-	if err := json.NewDecoder(preRes.Body).Decode(&preData); err != nil {
-		return nil, fmt.Errorf("failed to parse pre-login response (status %d, content-type %q): %w", preRes.StatusCode, preRes.Header.Get("Content-Type"), err)
+	if preRes.StatusCode < 200 || preRes.StatusCode >= 300 {
+		return nil, &LoginError{Stage: LoginStagePreLogin, StatusCode: preRes.StatusCode}
 	}
-
-	if !preData.S || !preData.D.Valid {
-		msg := preData.D.ErrorMsg
-		if msg == "" {
-			msg = "invalid email or password"
-		}
-		return nil, fmt.Errorf("%w: %s", ErrInvalidCredentials, msg)
+	if err := json.NewDecoder(preRes.Body).Decode(&preData); err != nil {
+		return nil, &LoginError{Stage: LoginStagePreLogin, StatusCode: preRes.StatusCode, Err: err}
+	}
+	if !preData.S {
+		return nil, &LoginError{Stage: LoginStagePreLogin, StatusCode: preRes.StatusCode}
 	}
 
 	// 3. Handle MFA / TOTP requirement
@@ -282,6 +301,9 @@ func (c *Client) Login(ctx context.Context, email, password string) (*LoginResul
 			ChallengeID: challengeID,
 		}, nil
 	}
+	if !preData.D.Valid {
+		return nil, &LoginError{Stage: LoginStagePreLogin, StatusCode: preRes.StatusCode, Err: ErrInvalidCredentials}
+	}
 
 	// 4. Proceed directly to auth.do
 	if err := c.doAuth(ctx, email, password, preData.D.Permit, nil, c.deviceID, c.jar); err != nil {
@@ -294,7 +316,12 @@ func (c *Client) Login(ctx context.Context, email, password string) (*LoginResul
 }
 
 // SubmitMFA handles resubmission with OTP and challenge ID.
-func (c *Client) SubmitMFA(ctx context.Context, email, password, challengeID, otp string) error {
+func (c *Client) SubmitMFA(ctx context.Context, email, password, challengeID, otp string) (err error) {
+	defer func() {
+		if err != nil {
+			c.ResetAuthentication()
+		}
+	}()
 	email = strings.TrimSpace(email)
 	challengeID = strings.TrimSpace(challengeID)
 	otp = strings.TrimSpace(otp)
@@ -309,10 +336,14 @@ func (c *Client) SubmitMFA(ctx context.Context, email, password, challengeID, ot
 	}
 
 	if !strings.EqualFold(challenge.Email, email) {
-		return ErrInvalidCredentials
+		return &LoginError{Stage: LoginStageMFAVerification, Err: ErrChallengeAccountMismatch}
 	}
 
-	// Resubmit to auth.do using cloned jar and deviceID from challenge
+	// Verify the OTP before submitting the browser authentication form. Accurate
+	// binds verification to the challenge cookies and device identifier.
+	if err := c.verifyMFA(ctx, email, password, challenge.Permit, otp, challenge.DeviceID, challenge.Jar); err != nil {
+		return err
+	}
 	if err := c.doAuth(ctx, email, password, challenge.Permit, &otp, challenge.DeviceID, challenge.Jar); err != nil {
 		return err
 	}
@@ -325,10 +356,53 @@ func (c *Client) SubmitMFA(ctx context.Context, email, password, challengeID, ot
 	return nil
 }
 
+func (c *Client) verifyMFA(ctx context.Context, email, password, permit, otp, deviceID string, jar *MemoryJar) error {
+	encoded, err := NucauthPost(password, permit, &otp, deviceID)
+	if err != nil {
+		return &LoginError{Stage: LoginStageMFAVerification, Err: err}
+	}
+	form := url.Values{"account": {email}, "password": {encoded}}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.idpHost+"/totp-login.do", strings.NewReader(form.Encode()))
+	if err != nil {
+		return &LoginError{Stage: LoginStageMFAVerification, Err: err}
+	}
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+	req.Header.Set("X-Requested-With", "XMLHttpRequest")
+	req.Header.Set("Origin", c.idpHost)
+	req.Header.Set("Referer", c.idpHost+"/")
+	req.Header.Set("User-Agent", UserAgent)
+	client := c.idpRedirectClient()
+	client.Jar = jar
+	res, err := client.Do(req)
+	if err != nil {
+		return &LoginError{Stage: LoginStageMFAVerification, Err: err}
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return &LoginError{Stage: LoginStageMFAVerification, StatusCode: res.StatusCode}
+	}
+	var data struct {
+		S bool `json:"s"`
+		D struct {
+			Valid bool `json:"valid"`
+		} `json:"d"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&data); err != nil {
+		return &LoginError{Stage: LoginStageMFAVerification, StatusCode: res.StatusCode, Err: err}
+	}
+	if !data.S {
+		return &LoginError{Stage: LoginStageMFAVerification, StatusCode: res.StatusCode}
+	}
+	if !data.D.Valid {
+		return &LoginError{Stage: LoginStageMFAVerification, StatusCode: res.StatusCode, Err: ErrInvalidOTP}
+	}
+	return nil
+}
+
 func (c *Client) doAuth(ctx context.Context, email, password, permit string, otp *string, deviceID string, jar *MemoryJar) error {
 	postHashed, err := NucauthPost(password, permit, otp, deviceID)
 	if err != nil {
-		return fmt.Errorf("failed to encode post-login payload: %w", err)
+		return &LoginError{Stage: LoginStageAuthentication, Err: err}
 	}
 
 	authForm := url.Values{
@@ -338,7 +412,7 @@ func (c *Client) doAuth(ctx context.Context, email, password, permit string, otp
 
 	authReq, err := http.NewRequestWithContext(ctx, "POST", c.idpHost+"/auth.do", strings.NewReader(authForm.Encode()))
 	if err != nil {
-		return err
+		return &LoginError{Stage: LoginStageAuthentication, Err: err}
 	}
 	authReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	authReq.Header.Set("Origin", c.idpHost)
@@ -356,17 +430,17 @@ func (c *Client) doAuth(ctx context.Context, email, password, permit string, otp
 
 	authRes, err := authClient.Do(authReq)
 	if err != nil {
-		return fmt.Errorf("auth.do request failed: %w", err)
+		return &LoginError{Stage: LoginStageAuthentication, Err: err}
 	}
 	defer authRes.Body.Close()
 
 	if authRes.StatusCode != http.StatusFound && authRes.StatusCode != http.StatusOK {
-		return fmt.Errorf("login failed: expected 302 redirect from /auth.do, got status %d", authRes.StatusCode)
+		return &LoginError{Stage: LoginStageAuthentication, StatusCode: authRes.StatusCode}
 	}
 
 	loc := authRes.Header.Get("Location")
 	if loc != "" && strings.Contains(loc, "error") {
-		return fmt.Errorf("%w: upstream redirected with error", ErrInvalidCredentials)
+		return &LoginError{Stage: LoginStageAuthentication, StatusCode: authRes.StatusCode, Err: ErrInvalidCredentials}
 	}
 
 	return nil
@@ -386,33 +460,60 @@ func (c *Client) GetDatabases(ctx context.Context) ([]DatabaseInfo, error) {
 	}
 	defer res.Body.Close()
 
+	if res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden {
+		return nil, ErrSessionExpired
+	}
+	if res.StatusCode >= 300 && res.StatusCode < 400 {
+		location, err := req.URL.Parse(res.Header.Get("Location"))
+		if err == nil && res.Header.Get("Location") != "" && location.Host == req.URL.Host {
+			switch location.Path {
+			case "/", "/login", "/login.do", "/auth.do":
+				return nil, ErrSessionExpired
+			}
+		}
+	}
 	if res.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("unexpected status from /manage: %d", res.StatusCode)
 	}
 
-	contentData, err := ExtractContentDataFromScripts(res.Body)
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read /manage response: %w", err)
+	}
+	// The login flow uses these named fields at /auth.do. A login page is
+	// evidence of expiry; an arbitrary HTML/error page is not.
+	if form, err := ExtractForm(bytes.NewReader(body), "j_username"); err == nil {
+		if _, ok := form.Fields["j_password"]; ok {
+			action, err := req.URL.Parse(form.Action)
+			if err == nil && action.Host == req.URL.Host && action.Path == "/auth.do" {
+				return nil, ErrSessionExpired
+			}
+		}
+	}
+	contentData, err := ExtractContentDataFromScripts(bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("could not parse contentData from /manage HTML: %w", err)
 	}
 
 	rawList, ok := contentData["dbList"].([]any)
 	if !ok {
-		return []DatabaseInfo{}, nil
+		return nil, errors.New("authenticated dbList missing or malformed in /manage response")
 	}
 
 	var dbs []DatabaseInfo
 	for _, item := range rawList {
 		m, ok := item.(map[string]any)
 		if !ok {
-			continue
+			return nil, errors.New("malformed database entry in /manage response")
 		}
 
-		var id int64
-		if rawID, ok := m["id"].(float64); ok {
-			id = int64(rawID)
+		rawID, validID := m["id"].(float64)
+		alias, validAlias := m["alias"].(string)
+		host, validHost := m["host"].(string)
+		if !validID || rawID <= 0 || rawID != float64(int64(rawID)) || !validAlias || !validHost || host == "" {
+			return nil, errors.New("malformed database entry in /manage response")
 		}
-		alias, _ := m["alias"].(string)
-		host, _ := m["host"].(string)
+		id := int64(rawID)
 		uniqueID, _ := m["uniqueId"].(string)
 		isPrivateCloud, _ := m["isPrivateCloud"].(bool)
 

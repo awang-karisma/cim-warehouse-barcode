@@ -50,13 +50,16 @@ export interface AccurateDatabase {
   isPrivateCloud?: boolean;
 }
 
+export type AccurateSessionState = 'valid' | 'expired' | 'unverified' | 'disconnected' | 'not_applicable';
 export interface AccurateStatus {
   enabled: boolean;
   provider?: string;
   connected: boolean;
 	accountId?: number;
 	accountName?: string;
-	 database?: AccurateDatabase;
+	sessionState?: AccurateSessionState;
+	verificationError?: string;
+	database?: AccurateDatabase;
 }
 export interface AccurateAccount {
   id: number;

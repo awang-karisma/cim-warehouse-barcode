@@ -119,7 +119,10 @@ func (p *Pool) Resolve(id int64, kind, email, password, token, signature string)
 		return nil, err
 	}
 	e := &Entry{Provider: prov}
-	e.Session = session.NewManager(p.store, id, prov)
+	e.Session, err = session.NewManager(p.store, id, prov)
+	if err != nil {
+		return nil, err
+	}
 	e.Registry = adapter.NewRegistry(prov)
 	p.entries[id] = e
 	return e, nil

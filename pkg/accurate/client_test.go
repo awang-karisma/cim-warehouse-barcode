@@ -129,6 +129,10 @@ func TestClient_LoginWithTOTP(t *testing.T) {
 			}
 		}`))
 	})
+	idpMux.HandleFunc("/totp-login.do", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"s":true,"d":{"valid":true}}`))
+	})
 
 	idpMux.HandleFunc("/auth.do", func(w http.ResponseWriter, r *http.Request) {
 		_ = r.ParseForm()
@@ -330,8 +334,9 @@ func TestClient_LoginEmptyPreLoginResponseIncludesHTTPContext(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected empty pre-login response to fail")
 	}
-	if !strings.Contains(err.Error(), "status 503") || !strings.Contains(err.Error(), `content-type "text/html"`) {
-		t.Fatalf("expected status and content type in error, got: %v", err)
+	var loginErr *accurate.LoginError
+	if !errors.As(err, &loginErr) || loginErr.Stage != accurate.LoginStagePreLogin || loginErr.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("expected safe pre-login status diagnostics, got: %v", err)
 	}
 }
 

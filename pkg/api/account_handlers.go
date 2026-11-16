@@ -28,11 +28,11 @@ type accurateAccountDTO struct {
 	Database           any    `json:"database,omitempty"`
 }
 
-func (s *Server) toAccurateAccountDTO(ctx context.Context, a storage.AccurateAccount) accurateAccountDTO {
+func (s *Server) toAccurateAccountDTO(a storage.AccurateAccount) (accurateAccountDTO, error) {
 	dto := accurateAccountDTO{ID: a.ID, Name: a.Name, Provider: a.Provider, Enabled: a.Enabled, Email: a.Email, HasPassword: a.Password != "", HasAPIToken: a.APIToken != "", HasSignatureSecret: a.SignatureSecret != "", IsDefault: a.IsDefault, CreatedAt: a.CreatedAt, UpdatedAt: a.UpdatedAt}
 	provider, _, _, _, tenant, official, err := s.store.LoadAccurateSession(a.ID)
 	if err != nil {
-		return dto
+		return accurateAccountDTO{}, huma.Error500InternalServerError("Failed to load Accurate account session")
 	}
 	if provider == "web" && tenant != nil && tenant.DSI != "" {
 		dto.Connected = true
@@ -41,7 +41,7 @@ func (s *Server) toAccurateAccountDTO(ctx context.Context, a storage.AccurateAcc
 		dto.Connected = true
 		dto.Database = official.Database
 	}
-	return dto
+	return dto, nil
 }
 func (s *Server) accountBox() (*accounts.SecretBox, error) {
 	if s.appConfig == nil || s.appConfig.AccurateEncryptionKey == "" {
@@ -65,7 +65,11 @@ func (s *Server) handleListAccurateAccounts(ctx context.Context, _ *struct{}) (*
 	}
 	out := make([]accurateAccountDTO, 0, len(as))
 	for _, a := range as {
-		out = append(out, s.toAccurateAccountDTO(ctx, a))
+		dto, err := s.toAccurateAccountDTO(a)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, dto)
 	}
 	return &struct {
 		Body []accurateAccountDTO `json:"accounts"`
@@ -129,7 +133,11 @@ func (s *Server) handleCreateAccurateAccount(ctx context.Context, in *createAccu
 	if e != nil {
 		return nil, huma.Error500InternalServerError("Account was created but could not be read")
 	}
-	return &createAccurateAccountOutput{Body: s.toAccurateAccountDTO(ctx, *saved)}, nil
+	dto, err := s.toAccurateAccountDTO(*saved)
+	if err != nil {
+		return nil, err
+	}
+	return &createAccurateAccountOutput{Body: dto}, nil
 }
 
 type accountIDInput struct {
@@ -226,7 +234,11 @@ func (s *Server) handleUpdateAccurateAccount(ctx context.Context, in *updateAccu
 	if e != nil {
 		return nil, huma.Error500InternalServerError("Failed to read Accurate account")
 	}
-	return &updateAccurateAccountOutput{Body: s.toAccurateAccountDTO(ctx, *saved)}, nil
+	dto, err := s.toAccurateAccountDTO(*saved)
+	if err != nil {
+		return nil, err
+	}
+	return &updateAccurateAccountOutput{Body: dto}, nil
 }
 
 type accountSuccess struct {
@@ -258,13 +270,20 @@ func (s *Server) handleActivateAccurateAccount(ctx context.Context, in *accountI
 		if errors.Is(e, storage.ErrNotFound) {
 			return nil, huma.Error404NotFound("Accurate account not found")
 		}
-		return nil, huma.Error409Conflict("Connect the account and select a database before using it")
+		if errors.Is(e, storage.ErrAccurateAccountNotConnected) || errors.Is(e, storage.ErrAccurateAccountDisabled) {
+			return nil, huma.Error409Conflict("Connect the account and select a database before using it")
+		}
+		return nil, huma.Error500InternalServerError("Failed to activate Accurate account")
 	}
 	a, e := s.store.GetAccurateAccount(ctx, in.AccountID)
 	if e != nil {
 		return nil, huma.Error500InternalServerError("Failed to read Accurate account")
 	}
-	return &updateAccurateAccountOutput{Body: s.toAccurateAccountDTO(ctx, *a)}, nil
+	dto, err := s.toAccurateAccountDTO(*a)
+	if err != nil {
+		return nil, err
+	}
+	return &updateAccurateAccountOutput{Body: dto}, nil
 }
 
 var _ = fmt.Sprintf

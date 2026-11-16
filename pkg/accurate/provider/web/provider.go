@@ -41,10 +41,9 @@ func (p *Provider) Login(ctx context.Context, challengeID, otp string) (accurate
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if challengeID != "" {
-		if strings.TrimSpace(otp) == "" {
-			return accurate.LoginResult{}, fmt.Errorf("OTP code is required for MFA completion")
-		}
+	challengeID = strings.TrimSpace(challengeID)
+	otp = strings.TrimSpace(otp)
+	if challengeID != "" && otp != "" {
 		err := p.client.SubmitMFA(ctx, p.email, p.password, challengeID, otp)
 		if err != nil {
 			return accurate.LoginResult{}, fmt.Errorf("MFA login failed: %w", err)
@@ -52,6 +51,8 @@ func (p *Provider) Login(ctx context.Context, challengeID, otp string) (accurate
 		return accurate.LoginResult{Status: accurate.LoginSuccess}, nil
 	}
 
+	// An initial Connect never carries a tenant or a previous MFA challenge.
+	p.tenantSession = nil
 	res, err := p.client.Login(ctx, p.email, p.password)
 	if err != nil {
 		return accurate.LoginResult{}, fmt.Errorf("login failed: %w", err)

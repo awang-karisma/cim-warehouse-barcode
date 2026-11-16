@@ -1,7 +1,7 @@
 package session
 
 import (
-	"log"
+	"fmt"
 	"sync"
 
 	"github.com/awang-karisma/cim-warehouse-barcode/pkg/accurate"
@@ -36,7 +36,7 @@ type Manager struct {
 }
 
 // NewManager creates an account-scoped Manager with persisted provider state.
-func NewManager(st SessionStore, accountID int64, prov accurate.Provider) *Manager {
+func NewManager(st SessionStore, accountID int64, prov accurate.Provider) (*Manager, error) {
 	var p accurate.Provider = prov
 	m := &Manager{store: st, accountID: accountID, prov: p}
 
@@ -49,7 +49,7 @@ func NewManager(st SessionStore, accountID int64, prov accurate.Provider) *Manag
 	if st != nil {
 		providerID, email, deviceID, cookies, tenant, officialState, err := st.LoadAccurateSession(accountID)
 		if err != nil {
-			log.Printf("session: failed to load session from store: %v", err)
+			return nil, fmt.Errorf("load Accurate session: %w", err)
 		} else {
 			if p == nil || p.ID() == providerID {
 				if accurate.ProviderKind(providerID) == accurate.ProviderOfficial {
@@ -80,7 +80,7 @@ func NewManager(st SessionStore, accountID int64, prov accurate.Provider) *Manag
 		}
 	}
 
-	return m
+	return m, nil
 }
 
 func (m *Manager) Provider() accurate.Provider {
@@ -102,16 +102,6 @@ func (m *Manager) Client() *accurate.Client {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.client
-}
-
-func (m *Manager) SetClient(c *accurate.Client) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.client = c
-	if wp, ok := m.prov.(*web.Provider); ok {
-		wp.SetClient(c)
-	}
-	m.persist()
 }
 
 func (m *Manager) SetEmail(email string) error {
@@ -244,10 +234,7 @@ func (m *Manager) resetLocked() error {
 	if op, ok := m.prov.(*official.Provider); ok {
 		op.ClearSession()
 	}
-	m.client = accurate.NewClient(nil)
-	if isWeb {
-		webProv.SetClient(m.client)
-	}
+	m.client.ResetAuthentication()
 	if m.store != nil {
 		return m.store.ClearAccurateSession(m.accountID)
 	}
@@ -260,25 +247,19 @@ func (m *Manager) Logout() error {
 	return m.resetLocked()
 }
 
-func (m *Manager) InvalidateSession() bool {
+func (m *Manager) InvalidateSession() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if err := m.resetLocked(); err != nil {
-		log.Printf("session: failed to clear session in store: %v", err)
-	}
-	return true
+	return m.resetLocked()
 }
 
-func (m *Manager) InvalidateTenantSession(expected *accurate.TenantSession) bool {
+func (m *Manager) InvalidateTenantSession(expected *accurate.TenantSession) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if expected == nil || m.tenantSession != expected {
-		return false
+		return false, nil
 	}
-	if err := m.resetLocked(); err != nil {
-		log.Printf("session: failed to clear session in store: %v", err)
-	}
-	return true
+	return true, m.resetLocked()
 }
 
 func (m *Manager) persist() error {

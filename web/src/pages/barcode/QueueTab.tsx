@@ -35,6 +35,7 @@ import {
 	handleSessionInvalidated,
 	setPendingChallengeFor,
 	activeStatus,
+	setIsLoginModalOpen,
 } from '~/stores/accurateAuth';
 import { qtyMode } from '~/stores/barcodeConfig';
 import {

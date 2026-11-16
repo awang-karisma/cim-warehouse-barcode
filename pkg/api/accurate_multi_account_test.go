@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -40,7 +39,7 @@ func (p *inventoryFixtureProvider) Login(_ context.Context, challengeID, _ strin
 		return accurate.LoginResult{Status: accurate.LoginMFARequired, ChallengeID: expected}, nil
 	}
 	if challengeID != expected {
-		return accurate.LoginResult{}, errors.New("challenge does not belong to this account")
+		return accurate.LoginResult{}, accurate.ErrInvalidCredentials
 	}
 	return accurate.LoginResult{Status: accurate.LoginSuccess}, nil
 }

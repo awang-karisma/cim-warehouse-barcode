@@ -5,6 +5,7 @@ import type {
   RolesResponse,
   PermissionsResponse,
 	AccurateAccount,
+	AccurateStatus,
   AccurateDatabase,
   AccurateSearchItemsResult,
   AccurateSourceInfo,
@@ -134,8 +135,10 @@ export const getAllPermissions = () =>
   apiFetch<{ permissions: string[] }>('/api/v1/admin/permissions');
 
 // Accurate Online Integration Endpoints
-export const getAccurateStatus = (accountId?: number) =>
-  apiFetch<AccurateStatus>(`/api/v1/accurate/status${accountId ? `?accountId=${accountId}` : ''}`);
+	export const getAccurateStatus = (accountId?: number, validate = false) => {
+	const query = qs({ accountId, validate: validate || undefined });
+	return apiFetch<AccurateStatus>(`/api/v1/accurate/status${query ? `?${query}` : ''}`);
+};
 
 export const getAccurateAccounts = () => apiFetch<AccurateAccount[]>('/api/v1/accurate/accounts');
 

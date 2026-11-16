@@ -4,13 +4,15 @@ import {
   createResource,
   createSignal,
   For,
+  onMount,
+	onCleanup,
   Show,
 } from 'solid-js';
 import { useI18n } from '~/i18n';
 import { PermissionGuard, useAuth } from '~/auth';
 import * as api from '~/api';
 	import type { AccurateAccount as AccurateAccountDTO, AccurateDatabase, AccurateStatus } from '~/types';
-	import { pendingChallengeFor, refreshStatus, refreshDatabases, statusFor, databasesFor, errorFor, handleLogin, handleSelectDatabase, handleLogout } from '~/stores/accurateAuth';
+	import { pendingChallengeFor, refreshStatus, verifyStatus, refreshDatabases, statusFor, databasesFor, errorFor, handleLogin, handleSelectDatabase, handleLogout } from '~/stores/accurateAuth';
 	import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '~/components/ui/dialog';
 	import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '~/components/ui/card';
 import {
@@ -76,6 +78,65 @@ export const AccurateAccount: Component = () => {
 	const [accountDatabases, setAccountDatabases] = createSignal<AccurateDatabase[]>([]);
 	const [accountDetailStatus, setAccountDetailStatus] = createSignal<AccurateStatus>({ enabled: false, connected: false });
 	const [accountSessionLoading, setAccountSessionLoading] = createSignal(false);
+	const [workstationStatus, setWorkstationStatus] = createSignal<AccurateStatus>();
+	const [workstationLoading, setWorkstationLoading] = createSignal(true);
+	const [workstationError, setWorkstationError] = createSignal(false);
+	let disposed = false;
+	onCleanup(() => { disposed = true; });
+	type Verification = { state: 'checking' | 'failed' | 'unavailable' | 'not_active' | 'checked'; status?: AccurateStatus };
+	const [verificationByAccount, setVerificationByAccount] = createSignal<Record<number, Verification>>({});
+	const verificationGenerations = new Map<number, number>();
+	const verifyAccount = async (accountID: number) => {
+		const active = workstationStatus();
+		if (!auth.hasPermission('accurate:read') || active?.accountId !== accountID || active.provider !== 'web' || !active.connected) return;
+		const generation = (verificationGenerations.get(accountID) ?? 0) + 1;
+		verificationGenerations.set(accountID, generation);
+		setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'checking' } }));
+		try {
+			const status = await verifyStatus(accountID);
+			if (!disposed && verificationGenerations.get(accountID) === generation) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: status.sessionState === 'unverified' ? 'failed' : 'checked', status } }));
+		} catch {
+			if (!disposed && verificationGenerations.get(accountID) === generation) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'failed', status: statusFor(accountID) } }));
+		}
+	};
+	const refreshWorkstation = async (validate = false) => {
+		if (!auth.hasPermission('accurate:read')) { setWorkstationLoading(false); return; }
+		const status = await refreshStatus();
+		if (disposed) return;
+		const previousID = workstationStatus()?.accountId;
+		if (previousID != null && previousID !== status?.accountId) {
+			verificationGenerations.set(previousID, (verificationGenerations.get(previousID) ?? 0) + 1);
+			setVerificationByAccount((all) => ({ ...all, [previousID]: { state: 'not_active' } }));
+		}
+		setWorkstationStatus(status);
+		setWorkstationLoading(false);
+		setWorkstationError(!status);
+		if (status?.accountId && status.provider === 'web') {
+			const id = status.accountId;
+			if (!status.connected) setVerificationByAccount((all) => ({ ...all, [id]: { state: 'checked', status: statusFor(id) } }));
+			if (validate && status.connected) await verifyAccount(id);
+		}
+	};
+	onMount(() => { void refreshWorkstation(true); });
+	const verificationFor = (account: AccurateAccountDTO): Verification | undefined => account.provider === 'web' ? verificationByAccount()[account.id] ?? { state: 'not_active' } : undefined;
+	const effectiveConnected = (account: AccurateAccountDTO) => account.provider === 'official' ? account.connected : account.enabled && verificationFor(account)?.state === 'checked' && verificationFor(account)?.status?.sessionState === 'valid' && !!verificationFor(account)?.status?.connected;
+	const verificationLabel = (verification?: Verification) => {
+		if (!verification || verification.state === 'not_active' || verification.state === 'unavailable') return t('accurate.sessionNotChecked');
+		if (verification.state === 'checking') return t('accurate.sessionChecking');
+		if (verification.state === 'failed') return t('accurate.sessionCheckFailed');
+		switch (verification.status?.sessionState) {
+		case 'valid': return t('accurate.sessionVerified');
+		case 'expired': return t('accurate.sessionExpired');
+		case 'unverified': return t('accurate.sessionCheckFailed');
+		default: return t('accurate.disconnected');
+		}
+	};
+	const statusLabel = (account: AccurateAccountDTO) => {
+		if (account.provider === 'official') return account.connected ? t('accurate.connected') : t('accurate.disconnected');
+		if (!account.enabled) return t('accurate.disabled');
+		return verificationLabel(verificationFor(account));
+	};
+	const canConnect = (account: AccurateAccountDTO) => account.enabled && verificationFor(account)?.state !== 'checking';
   const clearFeedback = () => {
     setActionError(null);
     setActionSuccess(null);
@@ -116,12 +177,14 @@ export const AccurateAccount: Component = () => {
 			}
 			if (edited && selectedAccountID() === edited.id && (credentialsChanged || !accountEnabled())) {
 				accountViewGeneration++;
-				setAccountDetailStatus({enabled:accountEnabled(),connected:false,accountId:edited.id,accountName:accountName()});
+				setAccountDetailStatus({ enabled: accountEnabled(), connected: false, accountId: edited.id, accountName: accountName() });
 				setAccountDatabases([]);
+				if (edited.provider === 'web') setVerificationByAccount((all) => ({ ...all, [edited.id]: edited.is_default && accountEnabled() ? { state: 'checked', status: { enabled: accountEnabled(), connected: false, accountId: edited.id, sessionState: 'disconnected' } } : { state: 'not_active' } }));
 			}
 			setAccountDialogOpen(false);
 			setActionSuccess(t(editingAccount() ? 'accurate.accountUpdated' : 'accurate.accountCreated'));
 			await refetchAccounts();
+			if (edited?.is_default) await refreshWorkstation(credentialsChanged && accountEnabled());
 		} catch (err) {
 			setActionError(err instanceof Error ? err.message : t('common.unknownError'));
 		} finally { setSavingAccount(false); }
@@ -132,7 +195,8 @@ export const AccurateAccount: Component = () => {
 		setActionError(null);
 		try {
 			await api.activateAccurateAccount(account.id);
-			await Promise.all([refetchAccounts(), refreshStatus()]);
+			await refetchAccounts();
+			await refreshWorkstation(true);
 			setActionSuccess(t('accurate.accountActivated'));
 		} catch (err) { setActionError(err instanceof Error ? err.message : t('common.unknownError')); }
 		finally { setAccountMutationID(null); }
@@ -148,7 +212,8 @@ export const AccurateAccount: Component = () => {
 			if (selectedAccountID() === account.id) {
 				accountViewGeneration++; setSelectedAccountID(null); setAccountDetailStatus({enabled:false,connected:false}); setAccountDatabases([]);
 			}
-			await Promise.all([refetchAccounts(), refreshStatus()]);
+			await refetchAccounts();
+			await refreshWorkstation();
 			setActionSuccess(t('accurate.accountDeleted'));
 		} catch (err) { setActionError(err instanceof Error ? err.message : t('common.unknownError')); }
 		finally { setAccountMutationID(null); }
@@ -159,19 +224,21 @@ export const AccurateAccount: Component = () => {
 	let accountViewGeneration = 0;
 	const inspectAccount = async (accountID: number) => {
 		const generation = ++accountViewGeneration;
-		setSelectedAccountID(accountID); setOtp(''); setAccountDatabases([]); setAccountDetailStatus({ enabled: false, connected: false }); setActionError(null);
+		setSelectedAccountID(accountID); setOtp(''); setAccountDatabases([]); setActionError(null);
 		setAccountSessionLoading(false);
-		try {
-			await refreshStatus(accountID);
-			if (generation !== accountViewGeneration) return;
-			const current = statusFor(accountID);
-			setAccountDetailStatus(current);
-			const dbs = current.connected ? await refreshDatabases(accountID) : [];
-			if (generation === accountViewGeneration) setAccountDatabases(dbs);
-		} catch (err) { if (generation === accountViewGeneration) setActionError(err instanceof Error ? err.message : t('common.unknownError')); }
+		const account = accountsResource()?.find((candidate) => candidate.id === accountID);
+		const verification = account ? verificationFor(account) : undefined;
+		const current = account?.provider === 'official' ? statusFor(accountID) : verification?.status ?? { enabled: account?.enabled ?? false, connected: false, accountId: accountID };
+		const connected = !!account && (account.provider === 'official' ? account.connected : effectiveConnected(account));
+		setAccountDetailStatus({ ...current, connected });
+		if (connected) {
+			const databases = await refreshDatabases(accountID);
+			if (generation === accountViewGeneration && selectedAccountID() === accountID) setAccountDatabases(databases);
+		}
 	};
 	const connectSelectedAccount = async () => {
 		const accountID = selectedAccountID(); if (accountID == null) return;
+		const account = accountsResource()?.find((candidate) => candidate.id === accountID);
 		const generation = accountViewGeneration; clearFeedback(); setAccountSessionLoading(true);
 		try {
 			const ok = await handleLogin(otp().trim() || undefined, accountID);
@@ -180,6 +247,8 @@ export const AccurateAccount: Component = () => {
 				return;
 			}
 			setOtp(''); setAccountDetailStatus(statusFor(accountID)); setAccountDatabases(databasesFor(accountID)); await refetchAccounts();
+			await refreshWorkstation(account?.is_default === true);
+			if (account?.provider === 'web' && !account.is_default) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'not_active' } }));
 		} catch (err) { if (generation === accountViewGeneration) setActionError(err instanceof Error ? err.message : t('common.unknownError')); }
 		finally { if (generation === accountViewGeneration) setAccountSessionLoading(false); }
 	};
@@ -188,6 +257,9 @@ export const AccurateAccount: Component = () => {
 		try {
 			if (await handleSelectDatabase(databaseID, accountID) && generation === accountViewGeneration && selectedAccountID() === accountID) {
 				setAccountDetailStatus(statusFor(accountID)); setAccountDatabases(databasesFor(accountID)); await refetchAccounts();
+				const account = accountsResource()?.find((candidate) => candidate.id === accountID);
+				await refreshWorkstation(account?.is_default === true);
+				if (account?.provider === 'web' && !account.is_default) setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'not_active' } }));
 			} else if (errorFor(accountID)) setActionError(errorFor(accountID));
 		} finally { if (generation === accountViewGeneration) setAccountSessionLoading(false); }
 	};
@@ -195,18 +267,22 @@ export const AccurateAccount: Component = () => {
 		const accountID = selectedAccountID(); if (accountID == null) return;
 		const generation = accountViewGeneration; setAccountSessionLoading(true);
 		try {
-			if (await handleLogout(accountID)) { setAccountDetailStatus(statusFor(accountID)); setAccountDatabases([]); await refetchAccounts(); }
+			if (await handleLogout(accountID) && generation === accountViewGeneration && selectedAccountID() === accountID) {
+				setAccountDetailStatus(statusFor(accountID)); setAccountDatabases([]); await refetchAccounts();
+				const account = accountsResource()?.find((candidate) => candidate.id === accountID);
+				if (account?.provider === 'web') setVerificationByAccount((all) => ({ ...all, [accountID]: { state: 'checked', status: statusFor(accountID) } }));
+				await refreshWorkstation();
+			}
 			else if (errorFor(accountID)) setActionError(errorFor(accountID));
 		} finally { if (generation === accountViewGeneration) setAccountSessionLoading(false); }
 	};
 	const toggleAccountSession = async (account: AccurateAccountDTO) => {
+		accountViewGeneration++;
 		setSelectedAccountID(account.id);
-		setAccountDetailStatus({ enabled: account.enabled, connected: account.connected, accountId: account.id, accountName: account.name, database: account.database });
-		if (account.connected) {
-			await disconnectSelectedAccount();
-			return;
-		}
-		await connectSelectedAccount();
+		const connected = effectiveConnected(account);
+		setAccountDetailStatus({ enabled: account.enabled, connected, accountId: account.id, accountName: account.name, database: verificationFor(account)?.status?.database ?? account.database });
+		if (connected) { await disconnectSelectedAccount(); return; }
+		if (canConnect(account)) await connectSelectedAccount();
 	};
 	const [sources] = createResource(
 		() => accountDetailStatus().connected&&auth.hasPermission('accurate:read')?(selectedAccountID()??0):0,
@@ -215,7 +291,19 @@ export const AccurateAccount: Component = () => {
 
 
 	return (
-		<Show when={auth.hasPermission('accurate_account:read')} fallback={<Alert variant="destructive"><AlertTitle>{t('common.error')}</AlertTitle><AlertDescription>{t('accurate.accessDenied')}</AlertDescription></Alert>}>
+		<Show when={auth.hasPermission('accurate_account:read')} fallback={
+			<Show when={auth.hasPermission('accurate:read')} fallback={<Alert variant="destructive"><AlertTitle>{t('common.error')}</AlertTitle><AlertDescription>{t('accurate.accessDenied')}</AlertDescription></Alert>}>
+				<Card class="w-full max-w-5xl mx-auto">
+					<CardHeader><CardTitle>{t('accurate.activeWorkstationAccount')}</CardTitle><CardDescription>{workstationStatus()?.accountName || t('accurate.noActiveAccount')}</CardDescription></CardHeader>
+					<CardContent class="space-y-3">
+						<p role="status" aria-live="polite">{workstationLoading() ? t('accurate.sessionChecking') : workstationError() ? t('accurate.sessionCheckFailed') : !workstationStatus()?.accountId ? t('accurate.noActiveAccount') : workstationStatus()?.provider === 'official' ? (workstationStatus()?.connected ? t('accurate.connected') : t('accurate.disconnected')) : verificationLabel(verificationByAccount()[workstationStatus()!.accountId!])}</p>
+						<Show when={workstationStatus()?.provider === 'web' && workstationStatus()?.connected}>
+							<Button variant="outline" disabled={workstationLoading() || verificationByAccount()[workstationStatus()!.accountId!]?.state === 'checking'} onClick={() => void refreshWorkstation(true)}>{t('accurate.refreshStatus')}</Button>
+						</Show>
+					</CardContent>
+				</Card>
+			</Show>
+		}>
 		<div class="space-y-6 w-full min-w-0 max-w-5xl mx-auto pb-12">
       {/* Page Header */}
       <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-border pb-5">
@@ -264,23 +352,24 @@ export const AccurateAccount: Component = () => {
 								<For each={accountsResource()}>{(account) => <div class="rounded-md border border-border p-3 space-y-3">
 									<div><button type="button" class="font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void inspectAccount(account.id)}>{account.name}</button><div class="text-xs text-muted-foreground break-all">{account.email}</div></div>
 									<div class="flex flex-wrap items-center gap-2"><Badge variant="outline">{account.provider === 'web' ? t('accurate.providerWeb') : t('accurate.providerOfficial')}</Badge><Badge variant={account.enabled ? 'default' : 'secondary'}>{account.enabled ? t('accurate.enabled') : t('accurate.disabled')}</Badge><Show when={account.is_default}><Badge variant="outline">{t('accurate.activeWorkstationAccount')}</Badge></Show></div>
-									<p class="text-sm text-muted-foreground">{account.connected ? account.database?.alias || t('accurate.connected') : t('accurate.disconnected')}</p>
-									<div class="flex flex-wrap gap-2"><Show when={auth.hasPermission(account.connected ? 'accurate:delete' : 'accurate:create')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')} disabled={!account.enabled || accountSessionLoading()} onClick={() => void toggleAccountSession(account)}><Show when={account.connected} fallback={<IconPlugConnected class="size-4" />}><IconPlugConnectedX class="size-4" /></Show></TooltipTrigger><TooltipContent>{account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')}</TooltipContent></Tooltip></Show><Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('common.edit')} onClick={() => openAccountDialog(account)}><IconPencil class="size-4" /></TooltipTrigger><TooltipContent>{t('common.edit')}</TooltipContent></Tooltip><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('accurate.useAccount')} disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id} onClick={() => void activateAccount(account)}><IconCheck class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.useAccount')}</TooltipContent></Tooltip></Show><Show when={auth.hasPermission('accurate_account:delete')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="destructive" aria-label={t('accurate.deleteAccount')} onClick={() => setDeletingAccount(account)}><IconTrash class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.deleteAccount')}</TooltipContent></Tooltip></Show></div>
+									<p class="text-sm text-muted-foreground" role="status" aria-live="polite">{statusLabel(account)}{verificationFor(account)?.status?.verificationError ? ` — ${verificationFor(account)?.status?.verificationError}` : null}{effectiveConnected(account) && (verificationFor(account)?.status?.database?.alias || account.database?.alias) ? ` · ${verificationFor(account)?.status?.database?.alias || account.database?.alias}` : null}</p>
+									<Show when={account.provider === 'web' && (verificationFor(account)?.state === 'failed' || verificationFor(account)?.status?.sessionState === 'unverified')}><Button variant="outline" size="sm" onClick={() => void verifyAccount(account.id)}>{t('accurate.refreshStatus')}</Button></Show>
+									<div class="flex flex-wrap gap-2"><Show when={auth.hasPermission(effectiveConnected(account) ? 'accurate:delete' : 'accurate:create') && (effectiveConnected(account) || canConnect(account))}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={effectiveConnected(account) ? t('accurate.disconnectBtn') : t('accurate.connectBtn')} disabled={!account.enabled || accountSessionLoading()} onClick={() => void toggleAccountSession(account)}><Show when={effectiveConnected(account)} fallback={<IconPlugConnected class="size-4" />}><IconPlugConnectedX class="size-4" /></Show></TooltipTrigger><TooltipContent>{effectiveConnected(account) ? t('accurate.disconnectBtn') : t('accurate.connectBtn')}</TooltipContent></Tooltip></Show><Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('common.edit')} onClick={() => openAccountDialog(account)}><IconPencil class="size-4" /></TooltipTrigger><TooltipContent>{t('common.edit')}</TooltipContent></Tooltip><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('accurate.useAccount')} disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id || accountSessionLoading()} onClick={() => void activateAccount(account)}><IconCheck class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.useAccount')}</TooltipContent></Tooltip></Show><Show when={auth.hasPermission('accurate_account:delete')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="destructive" aria-label={t('accurate.deleteAccount')} onClick={() => setDeletingAccount(account)}><IconTrash class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.deleteAccount')}</TooltipContent></Tooltip></Show></div>
 								</div>}</For>
 							</div>
 							<div class="hidden sm:block">
 							<DataTable>
-								<TableHeader><TableRow><TableHead>{t('accurate.accountName')}</TableHead><TableHead>{t('accurate.provider')}</TableHead><TableHead>{t('common.status')}</TableHead><TableHead>{t('accurate.activeDatabase')}</TableHead><TableHead class="text-right">{t('common.actions')}</TableHead></TableRow></TableHeader>
+								<TableHeader><TableRow><TableHead>{t('accurate.accountName')}</TableHead><TableHead>{t('accurate.provider')}</TableHead><TableHead>{t('common.status')}</TableHead><TableHead>{t('accurate.activeDatabase')}</TableHead><TableHead class="text-right">{t('userManagement.actions')}</TableHead></TableRow></TableHeader>
 								<TableBody>
 									<For each={accountsResource()}>{(account) => <TableRow>
 						<TableCell><button type="button" class="text-left font-medium underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" onClick={() => void inspectAccount(account.id)}>{account.name}</button><div class="text-xs text-muted-foreground">{account.email}</div></TableCell>
 										<TableCell>{account.provider === 'web' ? t('accurate.providerWeb') : t('accurate.providerOfficial')}</TableCell>
 										<TableCell><Badge variant={account.enabled ? 'default' : 'secondary'}>{account.enabled ? t('accurate.enabled') : t('accurate.disabled')}</Badge></TableCell>
-										<TableCell>{account.connected ? account.database?.alias || t('accurate.connected') : t('accurate.disconnected')}{account.is_default && <Badge class="ml-2" variant="outline">{t('accurate.activeWorkstationAccount')}</Badge>}</TableCell>
+										<TableCell><span role="status" aria-live="polite">{statusLabel(account)}</span>{verificationFor(account)?.status?.verificationError ? ` — ${verificationFor(account)?.status?.verificationError}` : null}{effectiveConnected(account) ? ` · ${verificationFor(account)?.status?.database?.alias || account.database?.alias || t('accurate.connected')}` : null}{account.is_default && <Badge class="ml-2" variant="outline">{t('accurate.activeWorkstationAccount')}</Badge>}<Show when={account.provider === 'web' && (verificationFor(account)?.state === 'failed' || verificationFor(account)?.status?.sessionState === 'unverified')}><Button variant="outline" size="sm" onClick={() => void verifyAccount(account.id)}>{t('accurate.refreshStatus')}</Button></Show></TableCell>
 										<TableCell class="text-right"><div class="flex justify-end gap-2">
-											<Show when={auth.hasPermission(account.connected ? 'accurate:delete' : 'accurate:create')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')} disabled={!account.enabled || accountSessionLoading()} onClick={() => void toggleAccountSession(account)}><Show when={account.connected} fallback={<IconPlugConnected class="size-4" />}><IconPlugConnectedX class="size-4" /></Show></TooltipTrigger><TooltipContent>{account.connected ? t('accurate.disconnectBtn') : t('accurate.connectBtn')}</TooltipContent></Tooltip></Show>
+											<Show when={auth.hasPermission(effectiveConnected(account) ? 'accurate:delete' : 'accurate:create') && (effectiveConnected(account) || canConnect(account))}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={effectiveConnected(account) ? t('accurate.disconnectBtn') : t('accurate.connectBtn')} disabled={!account.enabled || accountSessionLoading()} onClick={() => void toggleAccountSession(account)}><Show when={effectiveConnected(account)} fallback={<IconPlugConnected class="size-4" />}><IconPlugConnectedX class="size-4" /></Show></TooltipTrigger><TooltipContent>{effectiveConnected(account) ? t('accurate.disconnectBtn') : t('accurate.connectBtn')}</TooltipContent></Tooltip></Show>
 											<Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('common.edit')} onClick={() => openAccountDialog(account)}><IconPencil class="size-4" /></TooltipTrigger><TooltipContent>{t('common.edit')}</TooltipContent></Tooltip></Show>
-											<Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('accurate.useAccount')} disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id} onClick={() => void activateAccount(account)}><IconCheck class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.useAccount')}</TooltipContent></Tooltip></Show>
+											<Show when={auth.hasPermission('accurate_account:update')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="outline" aria-label={t('accurate.useAccount')} disabled={!account.enabled || !account.connected || account.is_default || accountMutationID() === account.id || accountSessionLoading()} onClick={() => void activateAccount(account)}><IconCheck class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.useAccount')}</TooltipContent></Tooltip></Show>
 											<Show when={auth.hasPermission('accurate_account:delete')}><Tooltip><TooltipTrigger as={Button} size="icon" variant="destructive" aria-label={t('accurate.deleteAccount')} onClick={() => setDeletingAccount(account)}><IconTrash class="size-4" /></TooltipTrigger><TooltipContent>{t('accurate.deleteAccount')}</TooltipContent></Tooltip></Show>
 										</div></TableCell>
 									</TableRow>}</For>

@@ -25,7 +25,10 @@ func TestSessionManager_Persistence(t *testing.T) {
 
 	// Create manager with store
 	_, _ = st.CreateAccurateAccount(t.Context(), storage.AccurateAccount{Name: "test", Provider: "web", Enabled: true})
-	mgr := session.NewManager(st, 1, nil)
+	mgr, err := session.NewManager(st, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Set email
 	testEmail := "persisted@example.com"
@@ -71,7 +74,10 @@ func TestSessionManager_Persistence(t *testing.T) {
 	}
 
 	// Now simulate restart: create a new Manager pointing to the same store
-	mgr2 := session.NewManager(st, 1, nil)
+	mgr2, err := session.NewManager(st, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if mgr2.Email() != testEmail {
 		t.Errorf("expected email %q, got %q", testEmail, mgr2.Email())
@@ -100,7 +106,10 @@ func TestSessionManager_Persistence(t *testing.T) {
 	}
 
 	// Simulate restart after logout
-	mgr3 := session.NewManager(st, 1, nil)
+	mgr3, err := session.NewManager(st, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if mgr3.Email() != testEmail {
 		t.Errorf("expected account email %q after logout restart, got %q", testEmail, mgr3.Email())
 	}
@@ -123,7 +132,10 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	defer st.Close()
 
 	_, _ = st.CreateAccurateAccount(t.Context(), storage.AccurateAccount{Name: "test", Provider: "web", Enabled: true})
-	mgr := session.NewManager(st, 1, nil)
+	mgr, err := session.NewManager(st, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	mgr.SetEmail("active@example.com")
 
 	activeTenant := &accurate.TenantSession{
@@ -146,16 +158,16 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	}
 
 	// 1. Attempt invalidation with nil expected -> should return false and keep active state
-	if mgr.InvalidateTenantSession(nil) {
-		t.Fatal("expected InvalidateTenantSession(nil) to return false")
+	if invalidated, err := mgr.InvalidateTenantSession(nil); invalidated || err != nil {
+		t.Fatalf("nil invalidation: invalidated=%v err=%v", invalidated, err)
 	}
 	if s := mgr.Status(); !s.Connected || s.Database == nil || s.Database.ID != 101 {
 		t.Fatalf("state was modified on nil invalidation: %+v", s)
 	}
 
 	// 2. Attempt invalidation with stale tenant pointer -> should return false and keep active state
-	if mgr.InvalidateTenantSession(staleTenant) {
-		t.Fatal("expected InvalidateTenantSession(staleTenant) to return false")
+	if invalidated, err := mgr.InvalidateTenantSession(staleTenant); invalidated || err != nil {
+		t.Fatalf("stale invalidation: invalidated=%v err=%v", invalidated, err)
 	}
 	if s := mgr.Status(); !s.Connected || s.Database == nil || s.Database.ID != 101 {
 		t.Fatalf("state was modified on stale invalidation: %+v", s)
@@ -165,8 +177,8 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	}
 
 	// 3. Attempt invalidation with matching active tenant pointer -> should return true and clear state
-	if !mgr.InvalidateTenantSession(activeTenant) {
-		t.Fatal("expected InvalidateTenantSession(activeTenant) to return true")
+	if invalidated, err := mgr.InvalidateTenantSession(activeTenant); !invalidated || err != nil {
+		t.Fatalf("matching invalidation: invalidated=%v err=%v", invalidated, err)
 	}
 	if s := mgr.Status(); s.Connected || s.Database != nil {
 		t.Fatalf("expected disconnected status after invalidation, got: %+v", s)
@@ -179,7 +191,10 @@ func TestSessionManager_InvalidateTenantSession(t *testing.T) {
 	}
 
 	// Verify persistent store was cleared
-	mgrRestart := session.NewManager(st, 1, nil)
+	mgrRestart, err := session.NewManager(st, 1, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if mgrRestart.Status().Connected {
 		t.Fatal("expected store to be cleared after invalidation on restart")
 	}
@@ -200,7 +215,10 @@ func TestSessionManager_OfficialPersistenceWithoutSessionID(t *testing.T) {
 
 	offProv := official.New("test-token")
 	_, _ = st.CreateAccurateAccount(t.Context(), storage.AccurateAccount{Name: "test", Provider: "official", Enabled: true})
-	mgr := session.NewManager(st, 1, offProv)
+	mgr, err := session.NewManager(st, 1, offProv)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// In API Token mode, Session is empty, but Host and Database are populated
 	state := &accurate.OfficialSessionState{
@@ -223,7 +241,10 @@ func TestSessionManager_OfficialPersistenceWithoutSessionID(t *testing.T) {
 
 	// Simulate restart
 	offProv2 := official.New("test-token")
-	mgr2 := session.NewManager(st, 1, offProv2)
+	mgr2, err := session.NewManager(st, 1, offProv2)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	s2 := mgr2.Status()
 	if !s2.Connected || s2.Database == nil || s2.Database.ID != 3026472 {
@@ -234,7 +255,7 @@ func TestSessionManager_OfficialPersistenceWithoutSessionID(t *testing.T) {
 	}
 }
 
-func TestSessionManager_LogoutReplacesWebProviderClient(t *testing.T) {
+func TestSessionManager_LogoutPreservesConfiguredWebClient(t *testing.T) {
 	client := accurate.NewClient(nil)
 	client.Jar().LoadCookies([]*accurate.Cookie{{
 		Name:    "JSESSIONID",
@@ -244,7 +265,10 @@ func TestSessionManager_LogoutReplacesWebProviderClient(t *testing.T) {
 		Expires: time.Now().Add(time.Hour),
 	}})
 	provider := web.New("user@example.com", "password", client)
-	manager := session.NewManager(nil, 0, provider)
+	manager, err := session.NewManager(nil, 0, provider)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	if manager.Client() != provider.Client() {
 		t.Fatal("manager and provider should initially share the web client")
@@ -252,10 +276,10 @@ func TestSessionManager_LogoutReplacesWebProviderClient(t *testing.T) {
 	manager.Logout()
 
 	if manager.Client() != provider.Client() {
-		t.Fatal("logout should replace the provider client with the cleared client")
+		t.Fatal("logout should keep manager and provider clients coherent")
 	}
-	if manager.Client() == client {
-		t.Fatal("logout should not retain the old web client")
+	if manager.Client() != client {
+		t.Fatal("logout should retain configured transport and IdP host on the client")
 	}
 	if cookies := provider.Client().Jar().AllCookies(); len(cookies) != 0 {
 		t.Fatalf("expected provider client to have no cookies after logout; got %d", len(cookies))

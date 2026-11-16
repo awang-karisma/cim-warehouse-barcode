@@ -39,50 +39,127 @@ export const databasesFor = (id:number):AccurateDatabase[] => accountStates()[id
 export const errorFor = (id:number):string|null => accountStates()[id]?.error ?? null;
 
 export async function refreshDatabases(id:number):Promise<AccurateDatabase[]> {
+	const token = statusRequestTokens.get(id);
 	setLoading(id,true);setError(id,null);
-	try { const result=await api.getAccurateDatabases(id);setDatabases(id,result);return result; }
-	catch(err) { setError(id,err instanceof Error?err.message:'Failed to list databases');return []; }
-	finally { setLoading(id,false); }
+	try {
+		const result = await api.getAccurateDatabases(id);
+		if (statusRequestTokens.get(id) !== token) return [];
+		setDatabases(id,result);
+		return result;
+	} catch(err) {
+		if (statusRequestTokens.get(id) === token) setError(id,err instanceof Error?err.message:'Failed to list databases');
+		return [];
+	} finally { setLoading(id,false); }
 }
 function setLoading(id: number, loading: boolean) { patchAccount(id, { loading }); }
 function setError(id: number, error: string | null) { patchAccount(id, { error }); }
 function setDatabases(id: number, databases: AccurateDatabase[]) { patchAccount(id, { databases }); }
-
-export async function refreshStatus(accountId?: number): Promise<void> {
-  try {
-    const result = await api.getAccurateStatus(accountId);
-    if (accountId != null) {
-      patchAccount(accountId, { status: result });
-      return;
-    }
-	const selectedID = result.accountId ?? null;
-	const previousID = activeAccountID();
-	if (previousID !== selectedID) {
-		if (previousID != null) setPendingChallengeFor(previousID,null);
-		setIsLoginModalOpen(false);
+// Metadata reads are cheap and must neither cancel an explicit validation nor
+// erase its outcome for the same established database session.
+let statusSequence = 0;
+const statusRequestTokens = new Map<number, number>();
+const metadataRequestTokens = new Map<number, number>();
+const validationResults = new Map<number, { status: AccurateStatus; databaseID?: number }>();
+let activeStatusRequestToken = 0;
+function invalidateStatusRequest(accountId: number): number {
+	const token = ++statusSequence;
+	statusRequestTokens.set(accountId, token);
+	validationResults.delete(accountId);
+	return token;
+}
+function applyStatus(accountId: number, status: AccurateStatus, explicitValidation = false) {
+	const cleared = status.sessionState === 'expired' || status.sessionState === 'disconnected'
+		|| explicitValidation && status.sessionState === 'unverified';
+	patchAccount(accountId, { status, ...(cleared ? { databases: [], pendingChallengeId: null } : {}) });
+}
+function applyMetadata(accountId: number, metadata: AccurateStatus) {
+	const checked = validationResults.get(accountId);
+	if (metadata.provider === 'web' && checked && (
+		metadata.connected && metadata.database?.id === checked.databaseID ||
+		!metadata.connected && checked.status.sessionState === 'expired'
+	)) {
+		applyStatus(accountId, { ...metadata, connected: checked.status.connected, database: checked.status.database,
+			sessionState: checked.status.sessionState, verificationError: checked.status.verificationError });
+	} else {
+		validationResults.delete(accountId);
+		applyStatus(accountId, metadata);
 	}
-    setActiveAccountID(selectedID);
-    if (selectedID != null) patchAccount(selectedID, { status: result });
-  } catch {
-    if (accountId != null) patchAccount(accountId, { status: { ...disconnected, accountId } });
-	else { const previousID=activeAccountID(); setActiveAccountID(null); if(previousID!=null)setPendingChallengeFor(previousID,null); setIsLoginModalOpen(false); }
-  }
+}
+function markUnverified(accountId: number) {
+	const previous = statusFor(accountId);
+	patchAccount(accountId, { status: { ...previous, connected: false, database: undefined,
+		sessionState: previous.provider === 'official' ? 'not_applicable' : 'unverified',
+		verificationError: 'Unable to verify the Accurate session. Please try again.' }, databases: [], pendingChallengeId: null });
+}
+export async function verifyStatus(accountId: number): Promise<AccurateStatus> {
+	const previous = statusFor(accountId);
+	const databaseID = previous.database?.id ?? validationResults.get(accountId)?.databaseID;
+	const token = invalidateStatusRequest(accountId);
+	if (previous.provider !== 'official') patchAccount(accountId, { status: {
+		...previous, connected: false, database: undefined, sessionState: 'unverified', verificationError: undefined,
+	} });
+	try {
+		const result = await api.getAccurateStatus(accountId, true);
+		if (statusRequestTokens.get(accountId) !== token) return statusFor(accountId);
+		validationResults.set(accountId, { status: result, databaseID: result.database?.id ?? databaseID });
+		applyStatus(accountId, result, true);
+		return result;
+	} catch (error) {
+		if (statusRequestTokens.get(accountId) !== token) return statusFor(accountId);
+		markUnverified(accountId);
+		validationResults.set(accountId, { status: statusFor(accountId), databaseID });
+		throw error;
+	}
+}
+export async function refreshStatus(accountId?: number): Promise<AccurateStatus | undefined> {
+	const token = ++statusSequence;
+	if (accountId == null) activeStatusRequestToken = token;
+	else metadataRequestTokens.set(accountId, token);
+	const startedAccountID = accountId ?? activeAccountID();
+	try {
+		const result = await api.getAccurateStatus(accountId);
+		if (accountId != null) {
+			if (metadataRequestTokens.get(accountId) === token && (statusRequestTokens.get(accountId) ?? 0) <= token) applyMetadata(accountId, result);
+			return result;
+		}
+		if (activeStatusRequestToken !== token) return;
+		const selectedID = result.accountId ?? null;
+		const previousID = activeAccountID();
+		if (previousID !== selectedID) {
+			if (previousID != null) setPendingChallengeFor(previousID, null);
+			setIsLoginModalOpen(false);
+		}
+		setActiveAccountID(selectedID);
+		if (selectedID != null && (statusRequestTokens.get(selectedID) ?? 0) <= token && (metadataRequestTokens.get(selectedID) ?? 0) <= token) {
+			metadataRequestTokens.set(selectedID, token);
+			applyMetadata(selectedID, result);
+		}
+		return result;
+	} catch {
+		const currentRequest = accountId == null ? activeStatusRequestToken === token : metadataRequestTokens.get(accountId) === token;
+		if (currentRequest && startedAccountID != null && (statusRequestTokens.get(startedAccountID) ?? 0) <= token
+			&& !validationResults.has(startedAccountID)) markUnverified(startedAccountID);
+	}
 }
 
 export async function handleLogin(otpParam?: string, requestedAccountID?: number): Promise<boolean> {
   const accountID = requestedAccountID ?? activeAccountID();
-  if (accountID == null) { return false; }
+  if (accountID == null) return false;
+  invalidateStatusRequest(accountID);
   setLoading(accountID, true);
   setError(accountID, null);
-  try {
-    const res = await api.accurateLogin({
-      challengeId: pendingChallengeFor(accountID) ?? undefined,
-      otp: otpParam || undefined,
-    }, accountID);
-    if (res.status === ACCURATE_LOGIN_STATUS.MFA_REQUIRED && res.challengeId) {
-      setPendingChallengeFor(accountID, res.challengeId);
-      return false;
-    }
+  const submittedChallengeID = otpParam ? pendingChallengeFor(accountID) : null;
+  if (!otpParam) {
+    setPendingChallengeFor(accountID, null);
+		setDatabases(accountID, []);
+		const previous = statusFor(accountID);
+		patchAccount(accountID, { status: { ...previous, connected: false, database: undefined,
+			sessionState: previous.provider === 'official' ? 'not_applicable' : 'unverified', verificationError: undefined } });
+	}
+	try {
+    const res = await api.accurateLogin({ challengeId: submittedChallengeID ?? undefined, otp: otpParam || undefined }, accountID);
+		invalidateStatusRequest(accountID);
+    if (res.status === ACCURATE_LOGIN_STATUS.MFA_REQUIRED && res.challengeId) { setPendingChallengeFor(accountID, res.challengeId); return false; }
     setPendingChallengeFor(accountID, null);
     const databases = await api.getAccurateDatabases(accountID);
     setDatabases(accountID, databases);
@@ -90,49 +167,60 @@ export async function handleLogin(otpParam?: string, requestedAccountID?: number
     else await refreshStatus(accountID);
     return true;
   } catch (err) {
+	if (submittedChallengeID != null && pendingChallengeFor(accountID) === submittedChallengeID) {
+		setPendingChallengeFor(accountID, null);
+		setDatabases(accountID, []);
+		const previous = statusFor(accountID);
+		patchAccount(accountID, { status: { ...previous, connected: false, database: undefined,
+			sessionState: previous.provider === 'official' ? 'not_applicable' : 'disconnected', verificationError: undefined } });
+	}
     setError(accountID, err instanceof Error ? err.message : 'Login failed');
     return false;
-  } finally { setLoading(accountID, false); }
+  }
+  finally { setLoading(accountID, false); }
 }
 
 export async function handleSelectDatabase(databaseID: number, requestedAccountID?: number): Promise<boolean> {
   const accountID = requestedAccountID ?? activeAccountID();
   if (accountID == null) return false;
+  invalidateStatusRequest(accountID);
   setLoading(accountID, true);
   setError(accountID, null);
   try {
     const result = await api.selectAccurateDatabase({ id: databaseID }, accountID);
+		invalidateStatusRequest(accountID);
     if (!result.success) return false;
     await refreshStatus(accountID);
     if (accountID === activeAccountID()) setIsLoginModalOpen(false);
     return true;
-  } catch (err) {
-    setError(accountID, err instanceof Error ? err.message : 'Failed to select database');
-    return false;
-  } finally { setLoading(accountID, false); }
+  } catch (err) { setError(accountID, err instanceof Error ? err.message : 'Failed to select database'); return false; }
+  finally { setLoading(accountID, false); }
 }
 
 export async function handleLogout(requestedAccountID?: number): Promise<boolean> {
   const accountID = requestedAccountID ?? activeAccountID();
   if (accountID == null) return false;
+  invalidateStatusRequest(accountID);
   setLoading(accountID, true);
   setError(accountID, null);
   try {
     await api.accurateLogout(accountID);
+		invalidateStatusRequest(accountID);
     setDatabases(accountID, []);
     setPendingChallengeFor(accountID, null);
     await refreshStatus(accountID);
     if (accountID === activeAccountID()) setIsLoginModalOpen(false);
     return true;
-  } catch (err) {
-    setError(accountID, err instanceof Error ? err.message : 'Logout failed');
-    return false;
-  } finally { setLoading(accountID, false); }
+  } catch (err) { setError(accountID, err instanceof Error ? err.message : 'Logout failed'); return false; }
+  finally { setLoading(accountID, false); }
 }
 
 export function handleSessionInvalidated(message?: string, accountID = activeAccountID()): void {
   if (accountID == null) return;
+	invalidateStatusRequest(accountID);
   const previous = accountStates()[accountID]?.status ?? disconnected;
-  patchAccount(accountID, { status: { ...previous, connected: false, database: undefined }, databases: [], pendingChallengeId: null, error: message || 'Your Accurate session was invalidated or expired. Please sign in again.' });
+	const detail = message || 'Your Accurate session was invalidated or expired. Please sign in again.';
+	patchAccount(accountID, { status: { ...previous, connected: false, database: undefined, sessionState: 'expired', verificationError: undefined }, databases: [], pendingChallengeId: null, error: detail });
+	validationResults.set(accountID, { status: statusFor(accountID), databaseID: previous.database?.id });
   if (accountID === activeAccountID()) setIsLoginModalOpen(true);
 }

@@ -16,6 +16,51 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 )
 
+func accurateLoginError(err error) error {
+	if errors.Is(err, accurate.ErrSessionExpired) {
+		return huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
+	}
+	if errors.Is(err, accurate.ErrChallengeExpired) || errors.Is(err, accurate.ErrChallengeUsed) {
+		return huma.Error401Unauthorized("Accurate verification challenge expired or was already used. Please start sign-in again.")
+	}
+	if errors.Is(err, accurate.ErrInvalidOTP) {
+		return huma.Error401Unauthorized("Accurate verification code was rejected")
+	}
+	if errors.Is(err, accurate.ErrChallengeAccountMismatch) {
+		return huma.Error401Unauthorized("Accurate verification challenge belongs to a different account. Please start sign-in again.")
+	}
+	var loginErr *accurate.LoginError
+	if errors.As(err, &loginErr) {
+		if errors.Is(err, accurate.ErrInvalidCredentials) {
+			switch loginErr.Stage {
+			case accurate.LoginStagePreLogin:
+				return huma.Error401Unauthorized("Accurate credentials were rejected during pre-login verification")
+			case accurate.LoginStageAuthentication:
+				return huma.Error401Unauthorized("Accurate authentication was rejected after credential verification")
+			}
+		}
+		stage := "unknown"
+		switch loginErr.Stage {
+		case accurate.LoginStageInitialPage:
+			stage = "initial_page"
+		case accurate.LoginStagePreLogin:
+			stage = "pre_login"
+		case accurate.LoginStageMFAVerification:
+			stage = "mfa_verification"
+		case accurate.LoginStageAuthentication:
+			stage = "authentication"
+		}
+		if loginErr.StatusCode != 0 {
+			return huma.Error502BadGateway(fmt.Sprintf("Accurate login failed at %s (upstream HTTP %d)", stage, loginErr.StatusCode))
+		}
+		return huma.Error502BadGateway(fmt.Sprintf("Accurate login failed at %s", stage))
+	}
+	if errors.Is(err, accurate.ErrInvalidCredentials) {
+		return huma.Error401Unauthorized("Accurate credentials were rejected")
+	}
+	return huma.Error502BadGateway("Accurate authentication provider failed")
+}
+
 const ErrAccurateSessionInvalidatedDetail = "Your Accurate session was invalidated or expired. Please sign in again."
 
 func (s *Server) checkAccurateEnabled() error {
@@ -108,16 +153,19 @@ func (s *Server) resolveAccurateAccount(ctx context.Context, requested *int64) (
 // 1. GET /api/v1/accurate/status
 type AccurateStatusOutput struct {
 	Body struct {
-		Enabled     bool               `json:"enabled"`
-		Provider    string             `json:"provider,omitempty"`
-		Connected   bool               `json:"connected"`
-		Database    *accurate.Database `json:"database,omitempty"`
-		AccountID   *int64             `json:"accountId,omitempty"`
-		AccountName string             `json:"accountName,omitempty"`
+		Enabled           bool               `json:"enabled"`
+		Provider          string             `json:"provider,omitempty"`
+		Connected         bool               `json:"connected"`
+		Database          *accurate.Database `json:"database,omitempty"`
+		AccountID         *int64             `json:"accountId,omitempty"`
+		AccountName       string             `json:"accountName,omitempty"`
+		SessionState      string             `json:"sessionState" enum:"valid,expired,unverified,disconnected,not_applicable" doc:"Web status is unverified metadata unless validate=true checks the active established session; official API sessions are not_applicable"`
+		VerificationError string             `json:"verificationError,omitempty"`
 	}
 }
 type accurateStatusInput struct {
 	AccountID string `query:"accountId"`
+	Validate  bool   `query:"validate" doc:"Explicitly validate only the active/default account's established web session against upstream"`
 }
 
 func (s *Server) handleAccurateStatus(ctx context.Context, input *accurateStatusInput) (*AccurateStatusOutput, error) {
@@ -128,7 +176,9 @@ func (s *Server) handleAccurateStatus(ctx context.Context, input *accurateStatus
 	if id == nil {
 		a, err := s.store.GetDefaultAccurateAccount(ctx)
 		if errors.Is(err, storage.ErrNotFound) {
-			return &AccurateStatusOutput{}, nil
+			out := &AccurateStatusOutput{}
+			out.Body.SessionState = "disconnected"
+			return out, nil
 		}
 		if err != nil {
 			return nil, huma.Error500InternalServerError("Failed to read active Accurate account")
@@ -138,11 +188,22 @@ func (s *Server) handleAccurateStatus(ctx context.Context, input *accurateStatus
 	resolved, a, err := s.resolveAccurateAccount(ctx, id)
 	if err != nil {
 		if statusErr, ok := err.(interface{ GetStatus() int }); ok && statusErr.GetStatus() == 404 {
-			return &AccurateStatusOutput{}, nil
+			out := &AccurateStatusOutput{}
+			out.Body.SessionState = "disconnected"
+			return out, nil
 		}
 		return nil, err
 	}
 	defer resolved.releaseAccountOperation()
+	if input != nil && input.Validate {
+		active, err := s.store.GetDefaultAccurateAccount(ctx)
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			return nil, huma.Error500InternalServerError("Failed to read active Accurate account")
+		}
+		if active == nil || active.ID != a.ID {
+			return nil, huma.Error409Conflict("Only the active Accurate account can be validated")
+		}
+	}
 	st := resolved.accurateSession.Status()
 	out := &AccurateStatusOutput{}
 	out.Body.Enabled = true
@@ -151,6 +212,36 @@ func (s *Server) handleAccurateStatus(ctx context.Context, input *accurateStatus
 	out.Body.Database = st.Database
 	out.Body.AccountID = &a.ID
 	out.Body.AccountName = a.Name
+	out.Body.SessionState = "disconnected"
+	if resolved.accurateProvider.ID() == string(accurate.ProviderOfficial) {
+		// Official tokens are independent of the web provider's single-login rule.
+		out.Body.SessionState = "not_applicable"
+		return out, nil
+	}
+	if !st.Connected {
+		return out, nil
+	}
+	out.Body.SessionState = "unverified"
+	if input == nil || !input.Validate {
+		return out, nil
+	}
+	// resolveAccurateAccount holds the per-account operation lock through this
+	// probe and invalidation, serializing login/logout and credential replacement.
+	if _, err := resolved.accurateProvider.ListDatabases(ctx); err != nil {
+		if err := resolved.accurateSession.InvalidateSession(); err != nil {
+			return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+		}
+		out.Body.Connected = false
+		out.Body.Database = nil
+		if errors.Is(err, accurate.ErrSessionExpired) {
+			out.Body.SessionState = "expired"
+		} else {
+			out.Body.SessionState = "unverified"
+			out.Body.VerificationError = "Unable to verify the Accurate session. Reconnect to start a fresh login."
+		}
+		return out, nil
+	}
+	out.Body.SessionState = "valid"
 	return out, nil
 }
 
@@ -216,10 +307,25 @@ func (s *Server) handleAccurateLogin(ctx context.Context, input *AccurateLoginIn
 	if input != nil && input.Body.OTP != nil {
 		otp = *input.Body.OTP
 	}
+	challengeID = strings.TrimSpace(challengeID)
+	otp = strings.TrimSpace(otp)
+	if s.accurateProvider.ID() == string(accurate.ProviderWeb) && (challengeID == "" || otp == "") {
+		// Only an explicit challenge/code pair continues MFA. Clear the persisted
+		// tenant before any network request, even when the fresh login fails.
+		challengeID, otp = "", ""
+		if err := s.accurateSession.Logout(); err != nil {
+			return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+		}
+	}
 
 	res, err := s.accurateProvider.Login(ctx, challengeID, otp)
 	if err != nil {
-		return nil, huma.Error401Unauthorized("Accurate login failed")
+		if s.accurateProvider.ID() == string(accurate.ProviderWeb) && challengeID != "" && otp != "" {
+			if err := s.accurateSession.InvalidateSession(); err != nil {
+				return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+			}
+		}
+		return nil, accurateLoginError(err)
 	}
 
 	if res.Status == accurate.LoginMFARequired {
@@ -234,7 +340,9 @@ func (s *Server) handleAccurateLogin(ctx context.Context, input *AccurateLoginIn
 		}, nil
 	}
 	if err := s.accurateSession.SetEmail(s.accountEmail); err != nil {
-		s.accurateSession.InvalidateSession()
+		if err := s.accurateSession.InvalidateSession(); err != nil {
+			return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+		}
 		return nil, huma.Error500InternalServerError("Failed to persist Accurate session")
 	}
 
@@ -444,7 +552,9 @@ func (s *Server) handleAccurateItems(ctx context.Context, input *AccurateItemsIn
 	res, err := adapter.SearchItems(ctx, s.accurateProvider, query, page, pageSize)
 	if err != nil {
 		if errors.Is(err, accurate.ErrSessionExpired) {
-			s.accurateSession.InvalidateSession()
+			if err := s.accurateSession.InvalidateSession(); err != nil {
+				return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+			}
 			return nil, huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
 		}
 		return nil, huma.Error500InternalServerError("Failed to search Accurate items")
@@ -534,7 +644,9 @@ func (s *Server) handleAccurateSourceDocuments(ctx context.Context, input *Accur
 	docs, p, err := src.ListDocuments(ctx, s.accurateProvider, input.Q, input.From, input.To, page, pageSize)
 	if err != nil {
 		if errors.Is(err, accurate.ErrSessionExpired) {
-			s.accurateSession.InvalidateSession()
+			if err := s.accurateSession.InvalidateSession(); err != nil {
+				return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+			}
 			return nil, huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
 		}
 		return nil, huma.Error500InternalServerError("Failed to list Accurate source documents")
@@ -598,7 +710,9 @@ func (s *Server) handleAccurateSourceDocumentItems(ctx context.Context, input *A
 	items, err := src.GetDocumentItems(ctx, s.accurateProvider, docID)
 	if err != nil {
 		if errors.Is(err, accurate.ErrSessionExpired) {
-			s.accurateSession.InvalidateSession()
+			if err := s.accurateSession.InvalidateSession(); err != nil {
+				return nil, huma.Error500InternalServerError("Failed to clear Accurate session")
+			}
 			return nil, huma.Error401Unauthorized(ErrAccurateSessionInvalidatedDetail)
 		}
 		return nil, huma.Error500InternalServerError("Failed to fetch Accurate document items")
