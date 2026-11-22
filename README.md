@@ -94,6 +94,12 @@ Authentication is optional and bypassed by default in local environments:
   - Login and pending-approval gates are bypassed, providing immediate access to the print queue, label designer, preset management, and administrative views without external OAuth credentials.
 - **Enabling authentication**: Set a valid `GOOGLE_CLIENT_ID` in `.env` (along with `SUPERADMIN_EMAILS` and optional `JWT_SECRET`). The backend will enforce token verification and the frontend will require Google OAuth sign-in.
 
+### Accurate status in frontend pages
+
+Use `import { activeStatus } from '~/stores/accurateAuth'` and read `activeStatus().connected` reactively. Pages MUST NOT independently fetch `/api/v1/accurate/status` on mount, focus, or drawer open. The sidebar and shared store own initial status loading and refreshes after explicit context or connection/default/logout changes; other pages report context failures through store handlers. `/accurate` retains its detailed session-management and explicit validation checks. Keep the existing Solid signals; no additional state library is needed.
+
+Background metadata reads and session validation retain the last known connection and database while pending. Checking is separate from being disconnected; apply the new connection state when the request settles, and still clear expired or failed verification results.
+
 ## Production Build & Embedding
 
 To build a single self-contained binary with the SolidJS SPA embedded:

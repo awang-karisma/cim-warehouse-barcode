@@ -6,13 +6,11 @@ import {
   For,
   Index,
   onCleanup,
-  onMount,
   Show,
 } from 'solid-js';
-import { useAuth, PermissionGuard } from '~/auth';
+import { PermissionGuard } from '~/auth';
 import { QTY_MODE } from '~/domain';
 import * as api from '~/api';
-import { Badge } from '~/components/ui/badge';
 import { Button } from '~/components/ui/button';
 import {
   Card,
@@ -31,11 +29,10 @@ import {
 } from '~/components/ui/table';
 import { useI18n } from '~/i18n';
 import {
-  refreshStatus,
+	handleAccurateContextChanged,
 	handleSessionInvalidated,
 	setPendingChallengeFor,
 	activeStatus,
-	setIsLoginModalOpen,
 } from '~/stores/accurateAuth';
 import { qtyMode } from '~/stores/barcodeConfig';
 import {
@@ -51,8 +48,6 @@ import {
   IconFileInvoice,
   IconLoader2,
   IconPackage,
-  IconPlugConnected,
-  IconPlugConnectedX,
   IconPlus,
   IconScan,
   IconTrash,
@@ -61,7 +56,6 @@ import { setIsSearchOpen, setIsTransactionOpen } from './drawerState';
 
 export const QueueTab: Component = () => {
   const { t } = useI18n();
-  const auth = useAuth();
 
   let searchInputRef: HTMLInputElement | undefined;
   let searchContainerRef: HTMLDivElement | undefined;
@@ -75,12 +69,6 @@ export const QueueTab: Component = () => {
   const [isPopupOpen, setIsPopupOpen] = createSignal(false);
   const [highlightedIndex, setHighlightedIndex] = createSignal(-1);
 
-  onMount(() => {
-    void refreshStatus();
-    const onFocus = () => void refreshStatus();
-    window.addEventListener('focus', onFocus);
-    onCleanup(() => window.removeEventListener('focus', onFocus));
-  });
 
 	let priorAccountContext = '';
 	let priorAccountID: number | null = null;
@@ -192,7 +180,7 @@ export const QueueTab: Component = () => {
 			handleSessionInvalidated(err.message);
 			if (fromEnter) setSearchMessage(err.message);
 		} else if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) {
-			void refreshStatus();
+			void handleAccurateContextChanged(accountID);
 			setSearchMessage(t('accurate.contextChanged'));
 		}
       setIsPopupOpen(false);
@@ -336,7 +324,7 @@ export const QueueTab: Component = () => {
               </Show>
             </div>
 
-            {/* Import Buttons Group + Accurate status badge */}
+            {/* Import buttons: enabled only while the global Accurate status (sidebar indicator / accurateAuth store) is connected */}
             <div class="flex items-center gap-2 flex-wrap">
               <Show when={activeStatus().connected}>
                 <PermissionGuard permission="accurate:read">
@@ -360,63 +348,6 @@ export const QueueTab: Component = () => {
                     <span>{t('barcode.loadPoDo')}</span>
                   </Button>
                 </PermissionGuard>
-              </Show>
-
-              {/* Accurate Connection Status */}
-              <Show
-                when={activeStatus().enabled}
-                fallback={
-                  <Badge variant="outline" class="text-xs text-muted-foreground border-dashed h-9 px-3">
-                    {t('barcode.offlineMode')}
-                  </Badge>
-                }
-              >
-                <Show
-                  when={activeStatus().connected}
-                  fallback={
-                    <PermissionGuard
-                      permission="accurate:create"
-                      fallback={
-                        <span class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20">
-                          <IconPlugConnectedX class="size-3.5" />
-                          <span>{t('barcode.accurateDisconnected')}</span>
-                        </span>
-                      }
-                    >
-                      <button
-                        type="button"
-                        onClick={() => setIsLoginModalOpen(true)}
-                        class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-500/20 hover:bg-amber-500/20 transition-colors"
-                      >
-                        <IconPlugConnectedX class="size-3.5" />
-                        <span>{t('barcode.accurateDisconnected')}</span>
-                      </button>
-                    </PermissionGuard>
-                  }
-                >
-                  <Show
-                    when={auth.hasAnyPermission('accurate:update', 'accurate:delete')}
-                    fallback={
-                      <div class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20">
-                        <IconPlugConnected class="size-3.5" />
-                        <span class="truncate max-w-[140px] font-semibold">
-							{activeStatus().accountName ? `${activeStatus().accountName} · ` : ''}{activeStatus().database?.alias || t('barcode.connected')}
-                        </span>
-                      </div>
-                    }
-                  >
-                    <button
-                      type="button"
-                      onClick={() => setIsLoginModalOpen(true)}
-                      class="inline-flex items-center gap-1.5 px-3 h-9 rounded-md text-xs font-medium bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 hover:bg-emerald-500/20 transition-colors"
-                    >
-                      <IconPlugConnected class="size-3.5" />
-                      <span class="truncate max-w-[140px] font-semibold">
-							{activeStatus().accountName ? `${activeStatus().accountName} · ` : ''}{activeStatus().database?.alias || t('barcode.connected')}
-                      </span>
-                    </button>
-                  </Show>
-                </Show>
               </Show>
             </div>
           </div>

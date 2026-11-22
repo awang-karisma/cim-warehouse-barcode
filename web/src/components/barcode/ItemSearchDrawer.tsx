@@ -1,7 +1,7 @@
-import { type Component, createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import { type Component, createEffect, createSignal, For, Show } from 'solid-js';
 import { useI18n } from '~/i18n';
 import * as api from '~/api';
-	import { handleSessionInvalidated, refreshStatus, activeStatus } from '~/stores/accurateAuth';
+import { handleSessionInvalidated, handleAccurateContextChanged, activeStatus } from '~/stores/accurateAuth';
 import { addNormalizedItems } from '~/stores/barcodeItems';
 import type { AccurateInventoryItem, AccurateNormalizedItem, AccuratePagination } from '~/types';
 import {
@@ -45,9 +45,7 @@ export const ItemSearchDrawer: Component<ItemSearchDrawerProps> = (props) => {
 			setItems([]); setSelectedIds(new Set<number>()); setPagination({ page:1,pageCount:1,pageSize:50,rowCount:0 }); setIsLoading(false);
 		}
 	});
-	let wasOpen = false;
-	createEffect(() => { const open=props.isOpen; if(open&&!wasOpen) void refreshStatus(); wasOpen=open; });
-	onMount(() => { const onFocus=()=>void refreshStatus(); window.addEventListener('focus',onFocus); onCleanup(()=>window.removeEventListener('focus',onFocus)); });
+
 
 	const fetchItems = async (page = 1) => {
 		const accountID = activeStatus().accountId;
@@ -63,7 +61,7 @@ export const ItemSearchDrawer: Component<ItemSearchDrawerProps> = (props) => {
 		} catch (err) {
 			if (generation !== requestGeneration) return;
 			if (err instanceof api.ApiError && err.status === 401) handleSessionInvalidated(err.message);
-			if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await refreshStatus(); setError(t('accurate.contextChanged')); }
+			if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await handleAccurateContextChanged(accountID); setError(t('accurate.contextChanged')); }
 			else setError(err instanceof Error ? err.message : t('barcode.searchItemsFailed'));
 		} finally { if (generation === requestGeneration) setIsLoading(false); }
 	};

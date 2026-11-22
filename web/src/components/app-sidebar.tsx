@@ -1,6 +1,7 @@
 import { ROUTES } from '~/routes';
-import { type Component, For, createMemo } from 'solid-js';
-import { A, useLocation } from '@solidjs/router';
+import { For, Show, type Component, createMemo, onMount } from 'solid-js';
+import { Dynamic } from 'solid-js/web';
+import { A, useLocation, useNavigate } from '@solidjs/router';
 import { useAuth } from '~/auth';
 import { useI18n } from '~/i18n';
 import {
@@ -10,11 +11,15 @@ import {
   IconShieldCog,
   IconTestPipe,
   IconCloudComputing,
+  IconPlugConnected,
+  IconPlugConnectedX,
+  IconLoader2,
   type IconProps,
 } from '@tabler/icons-solidjs';
 import {
   Sidebar,
   SidebarContent,
+  SidebarFooter,
   SidebarGroup,
   SidebarGroupContent,
   SidebarGroupLabel,
@@ -25,6 +30,11 @@ import {
   SidebarRail,
   useSidebar,
 } from '~/components/ui/sidebar';
+import {
+  activeStatus,
+  refreshStatus,
+  workstationStatusState,
+} from '~/stores/accurateAuth';
 
 interface NavItem {
   href: string;
@@ -44,6 +54,44 @@ export const AppSidebar: Component = () => {
   const { t } = useI18n();
   const sidebar = useSidebar();
   const { isMobile, setOpenMobile } = sidebar;
+
+  // App mounts the authenticated sidebar only after the user (including
+  // permissions) is loaded. Initialize once with cheap metadata, never validate.
+  onMount(() => {
+    if (auth.hasPermission('accurate:read')) void refreshStatus();
+  });
+  const navigate = useNavigate();
+  const status = activeStatus;
+  const showAccurateStatus = createMemo(
+    () => auth.hasPermission('accurate:read') && workstationStatusState() !== 'denied'
+  );
+  const statusLabel = createMemo(() => {
+    if (workstationStatusState() === 'loading') return t('accurate.sessionChecking');
+    if (workstationStatusState() === 'failed') return t('accurate.statusUnavailable');
+    const s = status();
+    if (s.connected) {
+      const account = s.accountName || s.database?.alias;
+      return `${t('barcode.accurateConnected')}${account ? ` · ${account}` : ''}`;
+    }
+    if (s.enabled) return t('barcode.accurateDisconnected');
+    return `Accurate · ${t('accurate.noActiveAccount')}`;
+  });
+  const statusColor = createMemo(() => {
+    if (workstationStatusState() !== 'ready') return 'text-muted-foreground';
+    const s = status();
+    if (s.connected) return 'text-emerald-600 dark:text-emerald-400';
+    if (s.enabled) return 'text-amber-600 dark:text-amber-400';
+    return 'text-muted-foreground';
+  });
+  const statusIcon = createMemo(() => {
+    if (workstationStatusState() === 'loading') return IconLoader2;
+    if (workstationStatusState() === 'failed') return IconPlugConnectedX;
+    return status().connected ? IconPlugConnected : IconPlugConnectedX;
+  });
+  const handleStatusClick = () => {
+    handleNavClick();
+    navigate(ROUTES.accurate);
+  };
 
   const handleNavClick = () => {
     if (isMobile()) {
@@ -149,6 +197,26 @@ export const AppSidebar: Component = () => {
           )}
         </For>
       </SidebarContent>
+
+      <Show when={showAccurateStatus()}>
+        <SidebarFooter>
+          <SidebarMenu>
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                title={statusLabel()}
+                aria-label={statusLabel()}
+                onClick={handleStatusClick}
+                class="cursor-pointer"
+              >
+                <span class="flex size-4 shrink-0 items-center justify-center">
+                  <Dynamic component={statusIcon()} class={`size-4 shrink-0 ${statusColor()}`} />
+                </span>
+                <span class="truncate text-xs font-medium">{statusLabel()}</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          </SidebarMenu>
+        </SidebarFooter>
+      </Show>
 
       <SidebarRail />
     </Sidebar>

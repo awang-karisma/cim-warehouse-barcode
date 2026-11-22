@@ -14,6 +14,7 @@ const disconnected: AccurateStatus = { enabled: false, connected: false };
 const [activeAccountID, setActiveAccountID] = createSignal<number | null>(null);
 const [accountStates, setAccountStates] = createSignal<Record<number, AccountAuthState>>({});
 const [isLoginModalOpen, setIsLoginModalOpen] = createSignal(false);
+const [workstationStatusState, setWorkstationStatusState] = createSignal<'loading' | 'ready' | 'failed' | 'denied'>('loading');
 const activeState = createMemo(() => {
   const id = activeAccountID();
   return id == null ? undefined : accountStates()[id];
@@ -23,8 +24,7 @@ export const activeDatabases = createMemo(() => activeState()?.databases ?? []);
 export const activeAuthLoading = createMemo(() => activeState()?.loading ?? false);
 export const activeAuthError = createMemo(() => activeState()?.error ?? null);
 export const activePendingChallengeId = createMemo(() => activeState()?.pendingChallengeId ?? null);
-export { activeAccountID, isLoginModalOpen, setIsLoginModalOpen };
-
+export { activeAccountID, isLoginModalOpen, setIsLoginModalOpen, workstationStatusState };
 function patchAccount(id: number, patch: Partial<AccountAuthState>) {
   setAccountStates((all) => ({
     ...all,
@@ -95,9 +95,7 @@ export async function verifyStatus(accountId: number): Promise<AccurateStatus> {
 	const previous = statusFor(accountId);
 	const databaseID = previous.database?.id ?? validationResults.get(accountId)?.databaseID;
 	const token = invalidateStatusRequest(accountId);
-	if (previous.provider !== 'official') patchAccount(accountId, { status: {
-		...previous, connected: false, database: undefined, sessionState: 'unverified', verificationError: undefined,
-	} });
+	// Checking is tracked by the account page, not by clearing the shared session.
 	try {
 		const result = await api.getAccurateStatus(accountId, true);
 		if (statusRequestTokens.get(accountId) !== token) return statusFor(accountId);
@@ -113,16 +111,20 @@ export async function verifyStatus(accountId: number): Promise<AccurateStatus> {
 }
 export async function refreshStatus(accountId?: number): Promise<AccurateStatus | undefined> {
 	const token = ++statusSequence;
-	if (accountId == null) activeStatusRequestToken = token;
-	else metadataRequestTokens.set(accountId, token);
+	if (accountId == null) {
+		activeStatusRequestToken = token;
+		if (workstationStatusState() !== 'ready') setWorkstationStatusState('loading');
+	} else metadataRequestTokens.set(accountId, token);
 	const startedAccountID = accountId ?? activeAccountID();
 	try {
 		const result = await api.getAccurateStatus(accountId);
+		// Per-account reads cannot settle or hide the workstation indicator.
 		if (accountId != null) {
 			if (metadataRequestTokens.get(accountId) === token && (statusRequestTokens.get(accountId) ?? 0) <= token) applyMetadata(accountId, result);
 			return result;
 		}
 		if (activeStatusRequestToken !== token) return;
+		setWorkstationStatusState('ready');
 		const selectedID = result.accountId ?? null;
 		const previousID = activeAccountID();
 		if (previousID !== selectedID) {
@@ -135,11 +137,20 @@ export async function refreshStatus(accountId?: number): Promise<AccurateStatus 
 			applyMetadata(selectedID, result);
 		}
 		return result;
-	} catch {
+	} catch (err) {
 		const currentRequest = accountId == null ? activeStatusRequestToken === token : metadataRequestTokens.get(accountId) === token;
-		if (currentRequest && startedAccountID != null && (statusRequestTokens.get(startedAccountID) ?? 0) <= token
+		if (!currentRequest) return;
+		if (accountId == null) setWorkstationStatusState(err instanceof api.ApiError && err.status === 403 ? 'denied' : 'failed');
+		if (startedAccountID != null && (statusRequestTokens.get(startedAccountID) ?? 0) <= token
+			&& (metadataRequestTokens.get(startedAccountID) ?? 0) <= token
 			&& !validationResults.has(startedAccountID)) markUnverified(startedAccountID);
 	}
+}
+
+// Query consumers report a changed context; only the store owns its recovery read.
+export async function handleAccurateContextChanged(sourceAccountID: number): Promise<void> {
+	if (sourceAccountID !== activeAccountID()) return;
+	await refreshStatus();
 }
 
 export async function handleLogin(otpParam?: string, requestedAccountID?: number): Promise<boolean> {

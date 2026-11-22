@@ -1,7 +1,7 @@
-import { type Component, createEffect, createSignal, For, Show, onMount, onCleanup } from 'solid-js';
+import { type Component, createEffect, createSignal, For, Show } from 'solid-js';
 import { useI18n } from '~/i18n';
 import * as api from '~/api';
-	import { handleSessionInvalidated, refreshStatus, activeStatus } from '~/stores/accurateAuth';
+import { handleSessionInvalidated, handleAccurateContextChanged, activeStatus } from '~/stores/accurateAuth';
 import { addNormalizedItems } from '~/stores/barcodeItems';
 import type { AccurateDocumentHeader, AccurateNormalizedItem, AccuratePagination, AccurateSourceInfo } from '~/types';
 import {
@@ -56,15 +56,12 @@ export const TransactionDrawer: Component<TransactionDrawerProps> = (props) => {
 			setSources([]); setSelectedSource(''); setDocuments([]); setSelectedDoc(null); setDocItems([]); setSelectedItemIndices(new Set<number>()); setPagination({page:1,pageCount:1,pageSize:20,rowCount:0}); setIsLoading(false);
 		}
 	});
-	onMount(() => { const onFocus=()=>void refreshStatus(); window.addEventListener('focus',onFocus); onCleanup(()=>window.removeEventListener('focus',onFocus)); });
-	let wasOpen=false;
-	createEffect(() => { const open=props.isOpen; if(open&&!wasOpen) void refreshStatus(); wasOpen=open; });
+
 
 	createEffect(() => {
 		if (props.isOpen && sources().length === 0) {
 			void (async () => {
 				try {
-					await refreshStatus();
 					const accountID = activeStatus().accountId;
 					const databaseID = activeStatus().database?.id;
 					if (!accountID || !databaseID) { setError(t('accurate.noActiveAccount')); return; }
@@ -101,7 +98,7 @@ export const TransactionDrawer: Component<TransactionDrawerProps> = (props) => {
     } catch (err) {
       if (token !== listRequestToken || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
       if (err instanceof api.ApiError && err.status === 401) handleSessionInvalidated(err.message);
-		if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await refreshStatus(); setError(t('accurate.contextChanged')); }
+		if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await handleAccurateContextChanged(accountID); setError(t('accurate.contextChanged')); }
       else setError(err instanceof Error ? err.message : t('barcode.loadDocumentsFailed'));
     } finally { if (token === listRequestToken) setIsLoading(false); }
   };
@@ -120,7 +117,7 @@ export const TransactionDrawer: Component<TransactionDrawerProps> = (props) => {
     } catch (err) {
       if (token !== detailRequestToken || selectedSource() !== currentSource || activeStatus().accountId !== accountID || activeStatus().database?.id !== databaseID) return;
       if (err instanceof api.ApiError && err.status === 401) handleSessionInvalidated(err.message);
-		if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await refreshStatus(); setError(t('accurate.contextChanged')); }
+		if (err instanceof api.ApiError && (err.status === 409 || err.status === 403)) { await handleAccurateContextChanged(accountID); setError(t('accurate.contextChanged')); }
       else setError(err instanceof Error ? err.message : t('barcode.loadDocItemsFailed'));
     } finally { if (token === detailRequestToken) setIsLoading(false); }
   };
