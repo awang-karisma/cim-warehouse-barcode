@@ -10,6 +10,7 @@ import { App } from './App';
 import { AuthProvider } from './auth';
 import { I18nProvider } from './i18n';
 import { Barcode } from './pages/Barcode';
+import { PurchaseOrders } from './pages/PurchaseOrders';
 import { Privacy } from './pages/Privacy';
 import { Terms } from './pages/Terms';
 import { UserManagement } from './pages/UserManagement';
@@ -34,6 +35,7 @@ if (root) {
               <Router root={App}>
                 <Route path={ROUTES.root} component={() => <Navigate href={ROUTES.barcode} />} />
                 <Route path={ROUTES.barcode} component={Barcode} />
+                <Route path={ROUTES.purchaseOrders} component={PurchaseOrders} />
                 <Route path={ROUTES.accurate} component={AccurateAccount} />
                 <Route path={ROUTES.users} component={UserManagement} />
                 <Route path={ROUTES.roles} component={RoleManagement} />

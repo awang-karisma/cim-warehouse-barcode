@@ -77,10 +77,14 @@ function resolveSheetDimensions(cfg: PresetConfig) {
 
   return { sheetW, sheetH, lblW, lblH, mTop, mLeft, isAudit };
 }
-export const PrintPreview: Component = () => {
-  const { t, intlLocale } = useI18n();
-  const selectedItems = () => items().filter((it) => it.selected);
+export interface PrintPreviewProps {
+  items?: BarcodeItem[];
+}
 
+export const PrintPreview: Component<PrintPreviewProps> = (props) => {
+  const { t, intlLocale } = useI18n();
+  const sourceItems = () => props.items ?? items();
+  const selectedItems = () => sourceItems().filter((it) => it.selected);
   // Expand list based on qtyMode (single vs multiply)
   const expandedItems = () => {
     const list: BarcodeItem[] = [];

@@ -1,5 +1,5 @@
 import { type Component } from 'solid-js';
-import { useSearchParams } from '@solidjs/router';
+import { A, useSearchParams } from '@solidjs/router';
 import { AccurateLoginModal } from '~/components/barcode/AccurateLoginModal';
 import { ItemSearchDrawer } from '~/components/barcode/ItemSearchDrawer';
 import { TransactionDrawer } from '~/components/barcode/TransactionDrawer';
@@ -11,6 +11,7 @@ import {
 } from '~/components/ui/alert-dialog';
 import { Button } from '~/components/ui/button';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
+import { ROUTES } from '~/routes';
 import { useI18n } from '~/i18n';
 import {
   designToDelete,
@@ -19,6 +20,7 @@ import {
   setDesignToDelete,
 } from '~/stores/presetDraft';
 import {
+  IconFileInvoice,
   IconLayout2,
   IconPrinter,
   IconScan,
@@ -58,7 +60,7 @@ export const Barcode: Component = () => {
   return (
     <div class="barcode-print-root space-y-6">
       <Tabs value={activeTab()} onChange={handleTabChange} class="space-y-6">
-        <div class="no-print">
+        <div class="no-print flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <TabsList class="no-print w-full grid grid-cols-2 sm:w-auto sm:inline-flex h-auto sm:h-9 p-1 gap-1 sm:gap-0">
             <TabsTrigger value="queue" class="gap-2 text-xs sm:text-sm h-8 sm:h-7 px-3">
               <IconScan class="size-4 shrink-0" />
@@ -77,6 +79,17 @@ export const Barcode: Component = () => {
               <span>{t('barcode.previewTab')}</span>
             </TabsTrigger>
           </TabsList>
+
+          <Button
+            as={A}
+            href={ROUTES.purchaseOrders}
+            variant="outline"
+            size="sm"
+            class="no-print h-9 gap-1.5 self-start sm:self-auto text-xs"
+          >
+            <IconFileInvoice class="size-4 shrink-0" />
+            <span>{t('nav.purchaseOrders')}</span>
+          </Button>
         </div>
 
         <TabsContent value="queue">

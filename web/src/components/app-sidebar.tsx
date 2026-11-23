@@ -7,6 +7,7 @@ import { useI18n } from '~/i18n';
 import {
   IconPackage,
   IconBarcode,
+  IconFileInvoice,
   IconUserCog,
   IconShieldCog,
   IconTestPipe,
@@ -115,7 +116,8 @@ export const AppSidebar: Component = () => {
     {
       label: t('navGroups.tools'),
       items: [
-        { href: ROUTES.barcode, label: t('nav.barcodePrinter'), icon: IconBarcode },
+        { href: ROUTES.barcode, label: t('nav.barcodePrinter'), icon: IconBarcode, exact: true },
+        { href: ROUTES.purchaseOrders, label: t('nav.purchaseOrders'), icon: IconFileInvoice },
       ],
     },
     ...(canViewAccurate()
