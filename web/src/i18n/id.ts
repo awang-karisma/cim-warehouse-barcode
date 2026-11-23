@@ -64,6 +64,12 @@ export const dict: RawDictionary = {
     "deliveryTimeline": "Timeline Pengiriman",
     "barcodePrinter": "Cetak Barcode",
     "purchaseOrders": "Pesanan Pembelian",
+    "orderItems": "Daftar Dokumen",
+    "receiveItems": "Penerimaan Barang",
+    "salesOrders": "Pesanan Penjualan",
+    "deliveryOrders": "Pengiriman Pesanan",
+    "stockOpnameOrders": "Perintah Stok Opname",
+    "stockOpnameResults": "Hasil Stok Opname",
     "accurateAccount": "Accurate Online",
     "syncManager": "Manajer Sinkronisasi",
     "search": "Pencarian",
@@ -548,6 +554,34 @@ export const dict: RawDictionary = {
         "subtitle": "Pilih pesanan pembelian, periksa daftar barang, sesuaikan nama label atau jumlah cetak, lalu cetak lembar barcode.",
         "searchPlaceholder": "Filter menurut nomor PO, keterangan, atau pemasok...",
         "partyLabel": "Pemasok"
+      },
+      "receiveItem": {
+        "title": "Penerimaan Barang",
+        "subtitle": "Pilih penerimaan barang, periksa daftar barang diterima, sesuaikan nama label atau jumlah cetak, lalu cetak lembar barcode.",
+        "searchPlaceholder": "Filter menurut nomor penerimaan, keterangan, atau pemasok...",
+        "partyLabel": "Pemasok"
+      },
+      "salesOrder": {
+        "title": "Pesanan Penjualan",
+        "subtitle": "Pilih pesanan penjualan, periksa daftar barang dipesan, sesuaikan nama label atau jumlah cetak, lalu cetak lembar barcode.",
+        "searchPlaceholder": "Filter menurut nomor SO, keterangan, atau pelanggan...",
+        "partyLabel": "Pelanggan"
+      },
+      "deliveryOrder": {
+        "title": "Pengiriman Pesanan",
+        "subtitle": "Pilih pengiriman pesanan, periksa daftar barang dikirim, sesuaikan nama label atau jumlah cetak, lalu cetak lembar barcode.",
+        "searchPlaceholder": "Filter menurut nomor DO, keterangan, atau pelanggan...",
+        "partyLabel": "Pelanggan"
+      },
+      "stockOpnameOrder": {
+        "title": "Perintah Stok Opname",
+        "subtitle": "Pilih perintah stok opname, periksa daftar barang dihitung, sesuaikan nama label atau jumlah cetak, lalu cetak lembar barcode.",
+        "searchPlaceholder": "Filter menurut nomor perintah opname atau keterangan..."
+      },
+      "stockOpnameResult": {
+        "title": "Hasil Stok Opname",
+        "subtitle": "Pilih hasil stok opname, periksa daftar barang disesuaikan, sesuaikan nama label atau jumlah cetak, lalu cetak lembar barcode.",
+        "searchPlaceholder": "Filter menurut nomor hasil opname atau keterangan..."
       }
     }
   }

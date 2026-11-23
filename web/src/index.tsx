@@ -11,6 +11,11 @@ import { AuthProvider } from './auth';
 import { I18nProvider } from './i18n';
 import { Barcode } from './pages/Barcode';
 import { PurchaseOrders } from './pages/PurchaseOrders';
+import { ReceiveItems } from './pages/ReceiveItems';
+import { SalesOrders } from './pages/SalesOrders';
+import { DeliveryOrders } from './pages/DeliveryOrders';
+import { StockOpnameOrders } from './pages/StockOpnameOrders';
+import { StockOpnameResults } from './pages/StockOpnameResults';
 import { Privacy } from './pages/Privacy';
 import { Terms } from './pages/Terms';
 import { UserManagement } from './pages/UserManagement';
@@ -36,6 +41,11 @@ if (root) {
                 <Route path={ROUTES.root} component={() => <Navigate href={ROUTES.barcode} />} />
                 <Route path={ROUTES.barcode} component={Barcode} />
                 <Route path={ROUTES.purchaseOrders} component={PurchaseOrders} />
+                <Route path={ROUTES.receiveItems} component={ReceiveItems} />
+                <Route path={ROUTES.salesOrders} component={SalesOrders} />
+                <Route path={ROUTES.deliveryOrders} component={DeliveryOrders} />
+                <Route path={ROUTES.stockOpnameOrders} component={StockOpnameOrders} />
+                <Route path={ROUTES.stockOpnameResults} component={StockOpnameResults} />
                 <Route path={ROUTES.accurate} component={AccurateAccount} />
                 <Route path={ROUTES.users} component={UserManagement} />
                 <Route path={ROUTES.roles} component={RoleManagement} />

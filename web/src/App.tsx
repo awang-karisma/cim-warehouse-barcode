@@ -40,6 +40,11 @@ export const App: Component<RouteSectionProps> = (props) => {
   const routeTitle = createMemo(() => {
     const path = location.pathname;
     if (path.startsWith(ROUTES.purchaseOrders)) return t('nav.purchaseOrders');
+    if (path.startsWith(ROUTES.receiveItems)) return t('nav.receiveItems');
+    if (path.startsWith(ROUTES.salesOrders)) return t('nav.salesOrders');
+    if (path.startsWith(ROUTES.deliveryOrders)) return t('nav.deliveryOrders');
+    if (path.startsWith(ROUTES.stockOpnameOrders)) return t('nav.stockOpnameOrders');
+    if (path.startsWith(ROUTES.stockOpnameResults)) return t('nav.stockOpnameResults');
     if (path === ROUTES.root || path.startsWith(ROUTES.barcode)) return t('nav.barcodePrinter');
     if (path.startsWith(ROUTES.accurate)) return t('nav.accurateAccount');
     if (path.startsWith(ROUTES.users)) return t('nav.userManagement');

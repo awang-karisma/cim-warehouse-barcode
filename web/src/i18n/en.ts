@@ -65,6 +65,12 @@ export const dict = {
     "deliveryTimeline": "Delivery Timeline",
     "barcodePrinter": "Barcode Printer",
     "purchaseOrders": "Purchase Orders",
+    "orderItems": "Order Items",
+    "receiveItems": "Receive Items",
+    "salesOrders": "Sales Orders",
+    "deliveryOrders": "Delivery Orders",
+    "stockOpnameOrders": "Stock Opname Orders",
+    "stockOpnameResults": "Stock Opname Results",
     "accurateAccount": "Accurate Online",
     "syncManager": "Sync Manager",
     "search": "Search",
@@ -549,6 +555,34 @@ export const dict = {
         "subtitle": "Select purchase orders, inspect line items, adjust label names or print quantities, and print barcode sheets.",
         "searchPlaceholder": "Filter by PO number, description, or supplier...",
         "partyLabel": "Supplier"
+      },
+      "receiveItem": {
+        "title": "Receive Items",
+        "subtitle": "Select goods receipts, inspect received items, adjust label names or print quantities, and print barcode sheets.",
+        "searchPlaceholder": "Filter by receipt number, description, or supplier...",
+        "partyLabel": "Supplier"
+      },
+      "salesOrder": {
+        "title": "Sales Orders",
+        "subtitle": "Select sales orders, inspect ordered items, adjust label names or print quantities, and print barcode sheets.",
+        "searchPlaceholder": "Filter by SO number, description, or customer...",
+        "partyLabel": "Customer"
+      },
+      "deliveryOrder": {
+        "title": "Delivery Orders",
+        "subtitle": "Select delivery orders, inspect shipped items, adjust label names or print quantities, and print barcode sheets.",
+        "searchPlaceholder": "Filter by DO number, description, or customer...",
+        "partyLabel": "Customer"
+      },
+      "stockOpnameOrder": {
+        "title": "Stock Opname Orders",
+        "subtitle": "Select stock opname orders, inspect counted items, adjust label names or print quantities, and print barcode sheets.",
+        "searchPlaceholder": "Filter by opname order number or description..."
+      },
+      "stockOpnameResult": {
+        "title": "Stock Opname Results",
+        "subtitle": "Select stock opname results, inspect adjusted items, adjust label names or print quantities, and print barcode sheets.",
+        "searchPlaceholder": "Filter by opname result number or description..."
       }
     }
   }

@@ -8,6 +8,11 @@ import {
   IconPackage,
   IconBarcode,
   IconFileInvoice,
+  IconPackageImport,
+  IconShoppingCart,
+  IconTruckDelivery,
+  IconClipboardList,
+  IconClipboardCheck,
   IconUserCog,
   IconShieldCog,
   IconTestPipe,
@@ -118,6 +123,11 @@ export const AppSidebar: Component = () => {
       items: [
         { href: ROUTES.barcode, label: t('nav.barcodePrinter'), icon: IconBarcode, exact: true },
         { href: ROUTES.purchaseOrders, label: t('nav.purchaseOrders'), icon: IconFileInvoice },
+        { href: ROUTES.receiveItems, label: t('nav.receiveItems'), icon: IconPackageImport },
+        { href: ROUTES.salesOrders, label: t('nav.salesOrders'), icon: IconShoppingCart },
+        { href: ROUTES.deliveryOrders, label: t('nav.deliveryOrders'), icon: IconTruckDelivery },
+        { href: ROUTES.stockOpnameOrders, label: t('nav.stockOpnameOrders'), icon: IconClipboardList },
+        { href: ROUTES.stockOpnameResults, label: t('nav.stockOpnameResults'), icon: IconClipboardCheck },
       ],
     },
     ...(canViewAccurate()

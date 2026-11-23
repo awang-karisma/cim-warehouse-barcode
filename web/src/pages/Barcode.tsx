@@ -10,6 +10,12 @@ import {
   AlertDialogTitle,
 } from '~/components/ui/alert-dialog';
 import { Button } from '~/components/ui/button';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '~/components/ui/dropdown-menu';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '~/components/ui/tabs';
 import { ROUTES } from '~/routes';
 import { useI18n } from '~/i18n';
@@ -25,6 +31,11 @@ import {
   IconPrinter,
   IconScan,
   IconTemplate,
+  IconClipboardCheck,
+  IconClipboardList,
+  IconPackageImport,
+  IconShoppingCart,
+  IconTruckDelivery,
 } from '@tabler/icons-solidjs';
 import { DesignerTab } from './barcode/DesignerTab';
 import {
@@ -80,16 +91,43 @@ export const Barcode: Component = () => {
             </TabsTrigger>
           </TabsList>
 
-          <Button
-            as={A}
-            href={ROUTES.purchaseOrders}
-            variant="outline"
-            size="sm"
-            class="no-print h-9 gap-1.5 self-start sm:self-auto text-xs"
-          >
-            <IconFileInvoice class="size-4 shrink-0" />
-            <span>{t('nav.purchaseOrders')}</span>
-          </Button>
+          <DropdownMenu>
+            <DropdownMenuTrigger
+              as={Button}
+              variant="outline"
+              size="sm"
+              class="no-print h-9 gap-1.5 self-start sm:self-auto text-xs"
+            >
+              <IconFileInvoice class="size-4 shrink-0" />
+              <span>{t('nav.orderItems')}</span>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem as={A} href={ROUTES.purchaseOrders} class="gap-2">
+                <IconFileInvoice class="size-4" />
+                <span>{t('nav.purchaseOrders')}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem as={A} href={ROUTES.receiveItems} class="gap-2">
+                <IconPackageImport class="size-4" />
+                <span>{t('nav.receiveItems')}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem as={A} href={ROUTES.salesOrders} class="gap-2">
+                <IconShoppingCart class="size-4" />
+                <span>{t('nav.salesOrders')}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem as={A} href={ROUTES.deliveryOrders} class="gap-2">
+                <IconTruckDelivery class="size-4" />
+                <span>{t('nav.deliveryOrders')}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem as={A} href={ROUTES.stockOpnameOrders} class="gap-2">
+                <IconClipboardList class="size-4" />
+                <span>{t('nav.stockOpnameOrders')}</span>
+              </DropdownMenuItem>
+              <DropdownMenuItem as={A} href={ROUTES.stockOpnameResults} class="gap-2">
+                <IconClipboardCheck class="size-4" />
+                <span>{t('nav.stockOpnameResults')}</span>
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         <TabsContent value="queue">
